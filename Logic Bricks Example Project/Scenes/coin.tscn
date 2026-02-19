@@ -1,0 +1,256 @@
+[gd_scene format=3 uid="uid://ccspovhidqe4s"]
+
+[ext_resource type="Script" uid="uid://d0a62h12gl0i6" path="res://coin.gd" id="1_jgi06"]
+[ext_resource type="PackedScene" uid="uid://d20efk2u6u7u3" path="res://Assets/coin.glb" id="2_g537i"]
+
+[sub_resource type="CylinderShape3D" id="CylinderShape3D_h2p6v"]
+height = 0.20800781
+radius = 0.37597656
+
+[node name="Area3D" type="Area3D" unique_id=171534033 node_paths=PackedStringArray("_collision_area__25")]
+script = ExtResource("1_jgi06")
+_collision_area__25 = NodePath(".")
+metadata/logic_bricks_graph = {
+"connections": [{
+"from_node": &"brick_node_22",
+"from_port": 0,
+"to_node": &"brick_node_21",
+"to_port": 0
+}, {
+"from_node": &"brick_node_23",
+"from_port": 0,
+"to_node": &"brick_node_25",
+"to_port": 0
+}, {
+"from_node": &"brick_node_25",
+"from_port": 0,
+"to_node": &"brick_node_26",
+"to_port": 0
+}, {
+"from_node": &"brick_node_25",
+"from_port": 0,
+"to_node": &"brick_node_24",
+"to_port": 0
+}, {
+"from_node": &"brick_node_20",
+"from_port": 0,
+"to_node": &"brick_node_22",
+"to_port": 0
+}],
+"next_id": 27,
+"nodes": [{
+"brick_class": "AlwaysSensor",
+"brick_type": "sensor",
+"debug_enabled": false,
+"debug_message": "",
+"id": &"brick_node_20",
+"instance_name": "",
+"position": Vector2(-315.4847, -231.55695),
+"properties": {
+"enabled": true
+}
+}, {
+"brick_class": "MotionActuator",
+"brick_type": "actuator",
+"debug_enabled": false,
+"debug_message": "",
+"id": &"brick_node_21",
+"instance_name": "",
+"position": Vector2(520, -240),
+"properties": {
+"call_move_and_slide": false,
+"motion_type": "rotation",
+"movement_method": "translate",
+"space": "local",
+"velocity_mode": "set",
+"x": "0.0",
+"y": "1",
+"z": "0.0"
+}
+}, {
+"brick_class": "Controller",
+"brick_type": "controller",
+"debug_enabled": false,
+"debug_message": "",
+"id": &"brick_node_22",
+"instance_name": "",
+"position": Vector2(102.257645, -235.77847),
+"properties": {
+"logic_mode": "and",
+"state": 1
+}
+}, {
+"brick_class": "CollisionSensor",
+"brick_type": "sensor",
+"debug_enabled": false,
+"debug_message": "",
+"id": &"brick_node_23",
+"instance_name": "",
+"position": Vector2(-300, 320),
+"properties": {
+"detect_areas": true,
+"detect_bodies": true,
+"detection_mode": "entered",
+"filter_type": "group",
+"filter_value": "player"
+}
+}, {
+"brick_class": "EditObjectActuator",
+"brick_type": "actuator",
+"debug_enabled": false,
+"debug_message": "",
+"id": &"brick_node_24",
+"instance_name": "",
+"position": Vector2(620, 340),
+"properties": {
+"edit_type": "end_object",
+"end_delay": 0.1,
+"end_mode": "queue_free",
+"lifespan": 0.0,
+"mesh_path": "",
+"spawn_object": "",
+"spawn_point": NodePath(""),
+"velocity_local": false,
+"velocity_x": 0.0,
+"velocity_y": 0.0,
+"velocity_z": 0.0
+}
+}, {
+"brick_class": "Controller",
+"brick_type": "controller",
+"debug_enabled": false,
+"debug_message": "",
+"id": &"brick_node_25",
+"instance_name": "",
+"position": Vector2(160, 330),
+"properties": {
+"logic_mode": "and",
+"state": 1
+}
+}, {
+"brick_class": "MessageActuator",
+"brick_type": "actuator",
+"debug_enabled": false,
+"debug_message": "",
+"id": &"brick_node_26",
+"instance_name": "",
+"position": Vector2(640, 720),
+"properties": {
+"body": "",
+"subject": "coin",
+"target_group": "player"
+}
+}]
+}
+metadata/logic_bricks_frames = []
+metadata/logic_bricks = [{
+"actuators": [{
+"debug_enabled": false,
+"debug_message": "",
+"instance_name": "",
+"properties": {
+"call_move_and_slide": false,
+"motion_type": "rotation",
+"movement_method": "translate",
+"space": "local",
+"velocity_mode": "set",
+"x": "0.0",
+"y": "1",
+"z": "0.0"
+},
+"type": "MotionActuator"
+}],
+"controllers": [{
+"debug_enabled": false,
+"debug_message": "",
+"instance_name": "",
+"properties": {
+"logic_mode": "and",
+"state": 1
+},
+"type": "Controller"
+}],
+"name": "_22",
+"sensors": [{
+"debug_enabled": false,
+"debug_message": "",
+"instance_name": "",
+"properties": {
+"enabled": true
+},
+"type": "AlwaysSensor"
+}]
+}, {
+"actuators": [{
+"debug_enabled": false,
+"debug_message": "",
+"instance_name": "",
+"properties": {
+"body": "",
+"subject": "coin",
+"target_group": "player"
+},
+"type": "MessageActuator"
+}, {
+"debug_enabled": false,
+"debug_message": "",
+"instance_name": "",
+"properties": {
+"edit_type": "end_object",
+"end_delay": 0.1,
+"end_mode": "queue_free",
+"lifespan": 0.0,
+"mesh_path": "",
+"spawn_object": "",
+"spawn_point": NodePath(""),
+"velocity_local": false,
+"velocity_x": 0.0,
+"velocity_y": 0.0,
+"velocity_z": 0.0
+},
+"type": "EditObjectActuator"
+}],
+"controllers": [{
+"debug_enabled": false,
+"debug_message": "",
+"instance_name": "",
+"properties": {
+"logic_mode": "and",
+"state": 1
+},
+"type": "Controller"
+}],
+"name": "_25",
+"sensors": [{
+"debug_enabled": false,
+"debug_message": "",
+"instance_name": "",
+"properties": {
+"detect_areas": true,
+"detect_bodies": true,
+"detection_mode": "entered",
+"filter_type": "group",
+"filter_value": "player"
+},
+"type": "CollisionSensor"
+}]
+}]
+
+[node name="coin" parent="." unique_id=1473424859 instance=ExtResource("2_g537i")]
+transform = Transform3D(1, 0, 0, 0, -4.371139e-08, 1, 0, -1, -4.371139e-08, -0.2978449, 0.78557414, 0.2737958)
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 20,
+"nodes": []
+}
+metadata/logic_bricks_frames = []
+
+[node name="CollisionShape3D2" type="CollisionShape3D" parent="." unique_id=1848044215]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.008955002, 0)
+shape = SubResource("CylinderShape3D_h2p6v")
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 17,
+"nodes": []
+}
+metadata/logic_bricks_frames = []

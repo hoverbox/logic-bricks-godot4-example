@@ -1,0 +1,2822 @@
+extends RefCounted
+
+const NodeReferenceLineEdit = preload("res://addons/logic_bricks/ui/node_reference_line_edit.gd")
+
+var panel = null
+
+func setup(target_panel) -> void:
+	panel = target_panel
+
+
+
+
+
+func _refresh_compatibility_ui(graph_node: GraphNode, brick_instance) -> void:
+	graph_node.modulate = Color.WHITE
+	var warning = graph_node.get_node_or_null("CompatibilityWarning")
+	var compatibility_error = ""
+	if panel.current_node and brick_instance.has_method("get_compatibility_error"):
+		compatibility_error = str(brick_instance.call("get_compatibility_error", panel.current_node))
+	if compatibility_error.is_empty():
+		if warning:
+			warning.queue_free()
+		return
+	graph_node.modulate = Color(1.0, 0.55, 0.55, 1.0)
+	if not warning:
+		warning = Label.new()
+		warning.name = "CompatibilityWarning"
+		graph_node.add_child(warning)
+	warning.text = "⚠ " + compatibility_error
+	warning.tooltip_text = compatibility_error
+
+func _select_line_edit_text_on_focus(line_edit: LineEdit) -> void:
+	if line_edit == null:
+		return
+	line_edit.focus_entered.connect(func():
+		line_edit.call_deferred("select_all")
+		if panel and panel.has_method("show_expanded_line_edit_if_needed"):
+			panel.call_deferred("show_expanded_line_edit_if_needed", line_edit)
+	)
+
+
+func _select_spinbox_text_on_focus(spinbox: SpinBox) -> void:
+	if spinbox == null:
+		return
+	var line_edit = spinbox.get_line_edit()
+	_select_line_edit_text_on_focus(line_edit)
+	spinbox.focus_entered.connect(func():
+		var edit = spinbox.get_line_edit()
+		if edit != null:
+			edit.call_deferred("select_all")
+	)
+
+func _create_brick_ui(graph_node: GraphNode, brick_instance) -> void:
+	var properties = brick_instance.get_properties()
+	var prop_definitions = brick_instance.get_property_definitions()
+
+	# Keep incompatible bricks visible, but make the problem obvious.
+	_refresh_compatibility_ui(graph_node, brick_instance)
+
+	# Get tooltip definitions - try brick first, then centralized file
+	var tooltips = {}
+	if brick_instance.has_method("get_tooltip_definitions"):
+		tooltips = brick_instance.get_tooltip_definitions()
+	if tooltips.is_empty():
+		var BrickTooltips = load("res://addons/logic_bricks/core/brick_tooltips.gd")
+		if BrickTooltips:
+			var brick_data = graph_node.get_meta("brick_data") if graph_node.has_meta("brick_data") else null
+			if brick_data:
+				tooltips = BrickTooltips.get_tooltips(brick_data["brick_class"])
+
+	# Apply brick description tooltip to the GraphNode itself
+	if tooltips.has("_description"):
+		graph_node.tooltip_text = tooltips["_description"]
+
+	# Add instance name field first
+	var name_hbox = HBoxContainer.new()
+	name_hbox.name = "BrickConnectionRow"
+	var name_label = Label.new()
+	name_label.text = "Name:"
+	name_hbox.add_child(name_label)
+
+	var name_edit = LineEdit.new()
+	_select_line_edit_text_on_focus(name_edit)
+	name_edit.name = "InstanceNameEdit"
+	var inst_name = brick_instance.get_instance_name()
+	name_edit.text = inst_name if inst_name is String else ""
+	name_edit.placeholder_text = "brick_name"
+	name_edit.custom_minimum_size = Vector2(150, 0)
+	name_edit.text_changed.connect(_on_instance_name_changed.bind(graph_node, brick_instance))
+	name_hbox.add_child(name_edit)
+	name_hbox.tooltip_text = "Unique name for this brick instance. Used as variable prefix in generated code."
+
+	graph_node.add_child(name_hbox)
+
+	# Add separator if there are properties
+	if prop_definitions.size() > 0:
+		var separator = HSeparator.new()
+		graph_node.add_child(separator)
+
+	# Create UI based on property definitions if available
+	if prop_definitions.size() > 0:
+		var current_group_container: VBoxContainer = null  # Active group body
+
+		for prop_def in prop_definitions:
+			var property_name = prop_def["name"]
+			var property_value = properties.get(property_name, prop_def.get("default", null))
+			var property_type = prop_def.get("type", TYPE_NIL)
+			var hint = prop_def.get("hint", PROPERTY_HINT_NONE)
+			var hint_string = prop_def.get("hint_string", "")
+			hint_string = _variable_brick_hint_override(brick_instance, property_name, hint_string)
+
+			var ui_element = null
+
+			# === Collapsible group header (hint == 999) ===
+			if property_type == TYPE_NIL and hint == 999:
+				# Outer container so we can set_meta on it
+				var group_outer = VBoxContainer.new()
+				group_outer.add_theme_constant_override("separation", 8)
+				group_outer.set_meta("property_name", property_name)
+
+				# Check if this group should start collapsed
+				var start_collapsed = prop_def.get("collapsed", false)
+
+				# Header button
+				var group_btn = Button.new()
+				group_btn.text = ("▸ " if start_collapsed else "▾ ") + hint_string
+				group_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+				group_btn.flat = true
+				group_btn.add_theme_font_size_override("font_size", 11)
+				group_outer.add_child(group_btn)
+
+				# Body container (holds the properties in this group)
+				var group_body = VBoxContainer.new()
+				group_body.add_theme_constant_override("separation", 8)
+				group_body.name = "GroupBody"
+				group_body.visible = not start_collapsed
+				group_outer.add_child(group_body)
+
+				# Toggle collapse on click
+				group_btn.pressed.connect(func():
+					group_body.visible = not group_body.visible
+					group_btn.text = ("▾ " if group_body.visible else "▸ ") + hint_string
+					graph_node.reset_size()
+				)
+
+				graph_node.add_child(group_outer)
+				current_group_container = group_body
+				continue
+
+			# Check if this is an enum
+			if hint == PROPERTY_HINT_ENUM and not hint_string.is_empty():
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				hbox.add_child(label)
+
+				var option_button = OptionButton.new()
+				option_button.name = "PropertyControl_" + property_name
+
+				# Special case: AnimationPlayer list (find AnimationPlayer children)
+				if hint_string == "__ANIMATION_PLAYER_LIST__":
+					var anim_player_list = _get_animation_players(graph_node)
+
+					var selected_index = 0
+					for i in range(anim_player_list.size()):
+						var player_name = anim_player_list[i]
+						option_button.add_item(player_name, i)
+						option_button.set_item_metadata(i, player_name)
+
+						if player_name == property_value:
+							selected_index = i
+
+					# Add empty option if no AnimationPlayers found
+					if anim_player_list.is_empty():
+						option_button.add_item("(No AnimationPlayers found)", 0)
+						option_button.disabled = true
+
+					option_button.selected = selected_index
+
+				# Special case: Animation list — scans scene tree for all AnimationPlayers
+				elif hint_string == "__ANIMATION_LIST__":
+					option_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+					# Populate from all AnimationPlayers found in the scene tree
+					var animation_list = _get_all_animations_in_scene()
+
+					var selected_index = 0
+					if animation_list.is_empty():
+						option_button.add_item("(Click ↻ to load animations)", 0)
+						option_button.disabled = true
+					else:
+						option_button.disabled = false
+						for i in range(animation_list.size()):
+							var anim_name = animation_list[i]
+							option_button.add_item(anim_name, i)
+							option_button.set_item_metadata(i, anim_name)
+							if anim_name == property_value:
+								selected_index = i
+						option_button.selected = selected_index
+
+					# Add a Refresh button to rescan the scene
+					var refresh_btn = Button.new()
+					refresh_btn.text = "↻"
+					refresh_btn.tooltip_text = "Scan scene for AnimationPlayer nodes and reload animation list"
+					refresh_btn.custom_minimum_size = Vector2(28, 0)
+					refresh_btn.pressed.connect(func():
+						var new_list = _get_all_animations_in_scene()
+						option_button.clear()
+						if new_list.is_empty():
+							option_button.add_item("(No animations found)", 0)
+							option_button.disabled = true
+						else:
+							option_button.disabled = false
+							var new_selected = 0
+							var current_val = brick_instance.get_property(property_name, "")
+							for i in range(new_list.size()):
+								var anim_name = new_list[i]
+								option_button.add_item(anim_name, i)
+								option_button.set_item_metadata(i, anim_name)
+								if anim_name == current_val:
+									new_selected = i
+							option_button.selected = new_selected
+						graph_node.reset_size()
+					)
+
+					option_button.item_selected.connect(_on_enum_property_changed.bind(graph_node, property_name, property_type))
+					hbox.add_child(option_button)
+					hbox.add_child(refresh_btn)
+					ui_element = hbox
+					# Skip the normal item_selected connection below since we connected it above
+					graph_node.add_child(ui_element)
+					ui_element.set_meta("property_name", property_name)
+					continue
+
+				# AnimationTree condition list — scans current node's AnimationTree for conditions
+				elif hint_string == "__ANIM_TREE_CONDITION_LIST__":
+					option_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+					var condition_list = _get_animation_tree_conditions()
+
+					var selected_index = 0
+					if condition_list.is_empty():
+						option_button.add_item("(Click ↻ to load conditions)", 0)
+						option_button.disabled = true
+					else:
+						option_button.disabled = false
+						for i in range(condition_list.size()):
+							var cond_name = condition_list[i]
+							option_button.add_item(cond_name, i)
+							option_button.set_item_metadata(i, cond_name)
+							if cond_name == property_value:
+								selected_index = i
+						option_button.selected = selected_index
+
+					# Refresh button to re-scan the AnimationTree
+					var refresh_btn = Button.new()
+					refresh_btn.text = "↻"
+					refresh_btn.tooltip_text = "Scan AnimationTree for conditions and reload list"
+					refresh_btn.custom_minimum_size = Vector2(28, 0)
+					refresh_btn.pressed.connect(func():
+						var new_list = _get_animation_tree_conditions()
+						option_button.clear()
+						if new_list.is_empty():
+							option_button.add_item("(No conditions found)", 0)
+							option_button.disabled = true
+						else:
+							option_button.disabled = false
+							var new_selected = 0
+							var current_val = brick_instance.get_property(property_name, "")
+							for i in range(new_list.size()):
+								var cond_name = new_list[i]
+								option_button.add_item(cond_name, i)
+								option_button.set_item_metadata(i, cond_name)
+								if cond_name == current_val:
+									new_selected = i
+							option_button.selected = new_selected
+						graph_node.reset_size()
+					)
+
+					option_button.item_selected.connect(_on_enum_property_changed.bind(graph_node, property_name, property_type))
+					hbox.add_child(option_button)
+					hbox.add_child(refresh_btn)
+					ui_element = hbox
+					# Skip the normal item_selected connection below since we connected it above
+					graph_node.add_child(ui_element)
+					ui_element.set_meta("property_name", property_name)
+					continue
+
+				# Dynamic state-layer/state dropdowns
+				elif _populate_dynamic_enum(option_button, brick_instance, property_name, hint_string, property_value):
+					pass
+
+				# Regular enum dropdown
+				else:
+					# Parse enum string (format: "Display1:value1,Display2:value2" or "Display1,Display2")
+					var enum_parts = hint_string.split(",")
+					var selected_index = 0
+
+					for i in range(enum_parts.size()):
+						var part = enum_parts[i].strip_edges()
+						var display_name = part
+						var value = part.to_lower().replace(" ", "_")
+
+						# Check if it has a value specified (like "Space:32")
+						if ":" in part:
+							var split = part.split(":")
+							display_name = split[0]
+							value = split[1]
+
+						option_button.add_item(display_name, i)
+						option_button.set_item_metadata(i, value)
+
+						# Check if this is the current value
+						var current_value_str = str(property_value).to_lower().replace(" ", "_")
+						var value_str = str(value).to_lower().replace(" ", "_")
+
+						if property_type == TYPE_INT:
+							# For int enums, compare as integers
+							if str(value) == str(property_value):
+								selected_index = i
+						else:
+							# For string enums, compare as strings
+							if current_value_str == value_str:
+								selected_index = i
+
+					option_button.selected = selected_index
+
+				option_button.item_selected.connect(_on_enum_property_changed.bind(graph_node, property_name, property_type))
+				hbox.add_child(option_button)
+				ui_element = hbox
+
+			# Regular bool checkbox
+			elif property_type == TYPE_BOOL:
+				ui_element = CheckBox.new()
+				ui_element.name = "PropertyControl_" + property_name
+				ui_element.button_pressed = property_value
+				ui_element.text = _format_property_name(property_name)
+				ui_element.toggled.connect(_on_property_changed.bind(graph_node, property_name))
+
+			# Regular int spinbox
+			elif property_type == TYPE_INT and hint != PROPERTY_HINT_ENUM:
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				hbox.add_child(label)
+
+				var spinbox = SpinBox.new()
+				_select_spinbox_text_on_focus(spinbox)
+				spinbox.name = "PropertyControl_" + property_name
+				spinbox.min_value = -10000
+				spinbox.max_value = 10000
+				spinbox.value = float(str(property_value))
+				spinbox.value_changed.connect(func(val: float): _on_property_changed(int(val), graph_node, property_name))
+				hbox.add_child(spinbox)
+				ui_element = hbox
+
+			# Regular float spinbox
+			elif property_type == TYPE_FLOAT:
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				hbox.add_child(label)
+
+				var spinbox = SpinBox.new()
+				_select_spinbox_text_on_focus(spinbox)
+				spinbox.name = "PropertyControl_" + property_name
+				# Parse range from hint_string if provided (format: "min,max,step")
+				if hint == PROPERTY_HINT_RANGE and not hint_string.is_empty():
+					var range_parts = hint_string.split(",")
+					if range_parts.size() >= 1: spinbox.min_value = float(range_parts[0])
+					if range_parts.size() >= 2: spinbox.max_value = float(range_parts[1])
+					if range_parts.size() >= 3: spinbox.step = float(range_parts[2])
+					else: spinbox.step = 0.01
+				else:
+					spinbox.step = 0.01
+					spinbox.min_value = -10000
+					spinbox.max_value = 10000
+				spinbox.value = float(str(property_value))
+				spinbox.value_changed.connect(_on_property_changed.bind(graph_node, property_name))
+				hbox.add_child(spinbox)
+				ui_element = hbox
+
+			# File path with picker button
+			elif property_type == TYPE_STRING and hint == PROPERTY_HINT_FILE:
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				hbox.add_child(label)
+
+				var line_edit = LineEdit.new()
+				_select_line_edit_text_on_focus(line_edit)
+				line_edit.name = "PropertyControl_" + property_name
+				# Show just the filename, store full path in metadata
+				var display_text = property_value.get_file() if not property_value.is_empty() else ""
+				line_edit.text = display_text
+				line_edit.placeholder_text = "Select file..."
+				line_edit.custom_minimum_size = Vector2(120, 0)
+				line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				line_edit.editable = false  # Use the file picker button instead
+				line_edit.tooltip_text = property_value  # Full path on hover
+				hbox.add_child(line_edit)
+
+				var button = Button.new()
+				button.text = "..."
+				button.pressed.connect(_on_file_picker_pressed.bind(graph_node, property_name, hint_string))
+				hbox.add_child(button)
+
+				ui_element = hbox
+
+			# Input Map action name: free text plus a dropdown of project actions.
+			elif property_type == TYPE_STRING and prop_def.get("input_action_picker", false):
+				ui_element = _create_input_action_picker(graph_node, brick_instance, property_name, property_value)
+
+			# Logic Brick variable name: free text plus a dropdown of variables already created.
+			elif property_type == TYPE_STRING and prop_def.get("variable_picker", false):
+				ui_element = _create_variable_picker(graph_node, brick_instance, property_name, property_value)
+
+			# Group name: free text / node drag plus a picker of groups used by the project.
+			elif property_type == TYPE_STRING and prop_def.get("group_picker", false):
+				ui_element = _create_group_picker(graph_node, brick_instance, prop_def, property_name, property_value)
+
+			# Regular string line edit. Node-reference properties keep free typing and
+			# Ctrl-drag, and also expose a filtered child-node picker.
+			elif property_type == TYPE_STRING and hint != PROPERTY_HINT_ENUM:
+				if _is_node_reference_property(prop_def, property_name):
+					ui_element = _create_node_reference_picker(graph_node, brick_instance, prop_def, property_name, property_value)
+				else:
+					var hbox = HBoxContainer.new()
+					var label = Label.new()
+					label.text = _format_property_name(property_name) + ":"
+					hbox.add_child(label)
+
+					var line_edit = LineEdit.new()
+					_select_line_edit_text_on_focus(line_edit)
+					line_edit.name = "PropertyControl_" + property_name
+					line_edit.text = str(property_value) if typeof(property_value) != TYPE_STRING else property_value
+					line_edit.placeholder_text = "Enter " + _format_property_name(property_name).to_lower()
+					line_edit.text_changed.connect(_on_property_changed.bind(graph_node, property_name))
+					hbox.add_child(line_edit)
+					ui_element = hbox
+
+			# Color picker
+			elif property_type == TYPE_COLOR:
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				hbox.add_child(label)
+
+				var color_btn = ColorPickerButton.new()
+				color_btn.name = "PropertyControl_" + property_name
+				color_btn.custom_minimum_size = Vector2(80, 0)
+				if typeof(property_value) == TYPE_COLOR:
+					color_btn.color = property_value
+				color_btn.color_changed.connect(_on_property_changed.bind(graph_node, property_name))
+				hbox.add_child(color_btn)
+				ui_element = hbox
+
+			# === Dynamic array list (e.g. track list) ===
+			elif property_type == TYPE_ARRAY:
+				var item_hint        = prop_def.get("item_hint", PROPERTY_HINT_NONE)
+				var item_hint_string = prop_def.get("item_hint_string", "")
+				var item_label_text  = prop_def.get("item_label", "Item")
+
+				var vbox = VBoxContainer.new()
+				vbox.add_theme_constant_override("separation", 8)
+				vbox.set_meta("property_name", property_name)
+
+				# Header row: label + Add button
+				var header = HBoxContainer.new()
+				var arr_label = Label.new()
+				arr_label.text = _format_property_name(property_name) + ":"
+				arr_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				header.add_child(arr_label)
+				var add_btn = Button.new()
+				add_btn.text = "+"
+				add_btn.custom_minimum_size = Vector2(28, 0)
+				header.add_child(add_btn)
+				vbox.add_child(header)
+
+				# Item list container
+				var list_vbox = VBoxContainer.new()
+				list_vbox.add_theme_constant_override("separation", 8)
+				list_vbox.name = "ArrayListContainer"
+				vbox.add_child(list_vbox)
+
+				# Build the list rows — called immediately and after any add/remove
+				var capture_linked = prop_def.get("linked_array", "")
+				var capture_linked_default = prop_def.get("linked_default", "")
+				_build_array_property_list(
+					list_vbox, graph_node, brick_instance,
+					property_name, item_hint, item_hint_string, item_label_text,
+					capture_linked, capture_linked_default
+				)
+
+				# Add button handler
+				var capture_item_default = prop_def.get("item_default", "")
+				add_btn.pressed.connect(func():
+					var upd_arr: Array = brick_instance.get_property(property_name)
+					if typeof(upd_arr) != TYPE_ARRAY:
+						upd_arr = []
+					upd_arr.append(capture_item_default)
+					brick_instance.set_property(property_name, upd_arr)
+					# If this array has a linked array, append its default value too
+					var linked = prop_def.get("linked_array", "")
+					var linked_default = prop_def.get("linked_default", "")
+					if not linked.is_empty():
+						var linked_arr: Array = brick_instance.get_property(linked)
+						if typeof(linked_arr) != TYPE_ARRAY:
+							linked_arr = []
+						linked_arr.append(linked_default)
+						brick_instance.set_property(linked, linked_arr)
+					# Sync editable waypoint helper nodes for 3D and 2D waypoint actuators.
+					if property_name == "waypoints":
+						if panel.current_node is Node3D:
+							var WaypointPathActuator = load("res://addons/logic_bricks/bricks/actuators/3d/waypoint_path_actuator.gd")
+							if WaypointPathActuator:
+								WaypointPathActuator.sync_waypoint_nodes(panel.current_node, brick_instance)
+						elif panel.current_node is Node2D:
+							var WaypointPath2DActuator = load("res://addons/logic_bricks/bricks/actuators/2d/waypoint_path_2d_actuator.gd")
+							if WaypointPath2DActuator:
+								WaypointPath2DActuator.sync_waypoint_nodes(panel.current_node, brick_instance)
+					panel._save_graph_to_metadata()
+					_build_array_property_list(
+						list_vbox, graph_node, brick_instance,
+						property_name, item_hint, item_hint_string, item_label_text,
+						linked, linked_default
+					)
+					graph_node.reset_size()
+				)
+
+				ui_element = vbox
+
+			if ui_element:
+				# Store property name on the UI element for conditional visibility
+				ui_element.set_meta("property_name", property_name)
+				# Apply tooltip from brick's tooltip definitions
+				if tooltips.has(property_name):
+					ui_element.tooltip_text = tooltips[property_name]
+				# Place inside active group container if one exists, otherwise on graph node
+				if current_group_container != null:
+					current_group_container.add_child(ui_element)
+				else:
+					graph_node.add_child(ui_element)
+	else:
+		# Fallback: create UI from properties directly (old behavior)
+		for property_name in properties:
+			var property_value = properties[property_name]
+			var ui_element = null
+
+			if property_value is bool:
+				ui_element = CheckBox.new()
+				ui_element.button_pressed = property_value
+				ui_element.text = _format_property_name(property_name)
+				ui_element.toggled.connect(_on_property_changed.bind(graph_node, property_name))
+
+			elif property_value is int:
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				hbox.add_child(label)
+
+				ui_element = SpinBox.new()
+				_select_spinbox_text_on_focus(ui_element)
+				ui_element.min_value = -10000
+				ui_element.max_value = 10000
+				ui_element.value = property_value
+				ui_element.value_changed.connect(_on_property_changed.bind(graph_node, property_name))
+				hbox.add_child(ui_element)
+				ui_element = hbox
+
+
+
+			elif property_value is float:
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				hbox.add_child(label)
+
+				ui_element = SpinBox.new()
+				_select_spinbox_text_on_focus(ui_element)
+				ui_element.step = 0.01
+				ui_element.min_value = -10000
+				ui_element.max_value = 10000
+				ui_element.value = property_value
+				ui_element.value_changed.connect(_on_property_changed.bind(graph_node, property_name))
+				hbox.add_child(ui_element)
+				ui_element = hbox
+
+			elif property_value is String:
+				var hbox = HBoxContainer.new()
+				var label = Label.new()
+				label.text = _format_property_name(property_name) + ":"
+				hbox.add_child(label)
+
+				ui_element = LineEdit.new()
+				_select_line_edit_text_on_focus(ui_element)
+				ui_element.text = property_value
+				ui_element.text_changed.connect(_on_property_changed.bind(graph_node, property_name))
+				hbox.add_child(ui_element)
+				ui_element = hbox
+
+			if ui_element:
+				# Store property name on the UI element for conditional visibility
+				ui_element.set_meta("property_name", property_name)
+				if tooltips.has(property_name):
+					ui_element.tooltip_text = tooltips[property_name]
+				graph_node.add_child(ui_element)
+
+	var has_input_action_picker := false
+	for prop_def in prop_definitions:
+		if prop_def.get("input_action_picker", false):
+			has_input_action_picker = true
+			break
+	if has_input_action_picker:
+		graph_node.add_child(_create_open_input_maps_button())
+
+	# Add debug section separator
+	var debug_separator = HSeparator.new()
+	graph_node.add_child(debug_separator)
+
+	# Add debug checkbox
+	var debug_hbox = HBoxContainer.new()
+	var debug_check = CheckBox.new()
+	debug_check.name = "DebugCheckbox"
+	debug_check.button_pressed = brick_instance.debug_enabled
+	debug_check.text = "Debug Print"
+	debug_check.toggled.connect(_on_debug_enabled_changed.bind(graph_node, brick_instance))
+	debug_hbox.add_child(debug_check)
+	graph_node.add_child(debug_hbox)
+
+	# Add debug message field
+	var debug_msg_hbox = HBoxContainer.new()
+	var debug_msg_label = Label.new()
+	debug_msg_label.text = "Message:"
+	debug_msg_hbox.add_child(debug_msg_label)
+
+	var debug_msg_edit = LineEdit.new()
+	_select_line_edit_text_on_focus(debug_msg_edit)
+	debug_msg_edit.name = "DebugMessageEdit"
+	debug_msg_edit.text = brick_instance.debug_message
+	debug_msg_edit.placeholder_text = "Debug message..."
+	debug_msg_edit.custom_minimum_size = Vector2(150, 0)
+	debug_msg_edit.text_changed.connect(_on_debug_message_changed.bind(graph_node, brick_instance))
+	debug_msg_hbox.add_child(debug_msg_edit)
+	graph_node.add_child(debug_msg_hbox)
+
+	# Apply initial conditional visibility based on current property values
+	_update_conditional_visibility(graph_node, brick_instance)
+
+
+func _format_property_name(property_name: String) -> String:
+	if property_name == "state_id":
+		return "State"
+	if property_name == "all_states":
+		return "All States"
+	# Convert property_name to Display Name
+	return property_name.replace("_", " ").capitalize()
+
+
+func _get_animations_from_player(graph_node: GraphNode, anim_player_name: String) -> Array[String]:
+	# Get list of animation names from the AnimationPlayer on panel.current_node
+	var animations: Array[String] = []
+
+	if not panel.current_node:
+		return animations
+
+	# Try to find AnimationPlayer as child of panel.current_node
+	var anim_player = panel.current_node.get_node_or_null(anim_player_name)
+	if not anim_player or not anim_player is AnimationPlayer:
+		return animations
+
+	# Get all animation names
+	var anim_list = anim_player.get_animation_list()
+	for anim_name in anim_list:
+		animations.append(anim_name)
+
+	return animations
+
+
+func _get_animations_from_node_path(graph_node: GraphNode, node_path: String) -> Array[String]:
+	# Get list of animation names from AnimationPlayer on the specified child node
+	var animations: Array[String] = []
+
+	if not panel.current_node or node_path.is_empty():
+		return animations
+
+	# Find the node specified by the path
+	var target_node = panel.current_node.get_node_or_null(node_path)
+	if not target_node:
+		return animations
+
+	# Find AnimationPlayer as child of that node
+	for child in target_node.get_children():
+		if child is AnimationPlayer:
+			var anim_list = child.get_animation_list()
+			for anim_name in anim_list:
+				animations.append(anim_name)
+			break
+
+	return animations
+
+
+func _get_animation_players(graph_node: GraphNode) -> Array[String]:
+	# Get list of AnimationPlayer node names that are children of panel.current_node
+	var players: Array[String] = []
+
+	if not panel.current_node:
+		return players
+
+	# Search all children for AnimationPlayer nodes
+	for child in panel.current_node.get_children():
+		if child is AnimationPlayer:
+			players.append(child.name)
+
+	return players
+
+
+func _build_array_property_list(
+		list_vbox: VBoxContainer,
+		graph_node: GraphNode,
+		brick_instance,
+		property_name: String,
+		item_hint: int,
+		item_hint_string: String,
+		item_label_text: String,
+		linked_array: String = "",
+		linked_default: String = "") -> void:
+	# Clear existing rows
+	for c in list_vbox.get_children():
+		c.queue_free()
+
+	var current_arr: Array = brick_instance.get_property(property_name)
+	if typeof(current_arr) != TYPE_ARRAY:
+		current_arr = []
+
+	for idx in current_arr.size():
+		var row = HBoxContainer.new()
+
+		var idx_label = Label.new()
+		idx_label.text = "%s %d:" % [item_label_text, idx]
+		idx_label.custom_minimum_size = Vector2(56, 0)
+		row.add_child(idx_label)
+
+		if item_hint == PROPERTY_HINT_FILE:
+			var le = LineEdit.new()
+			_select_line_edit_text_on_focus(le)
+			le.text = str(current_arr[idx])
+			le.placeholder_text = "Select file..."
+			le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			le.editable = false
+			le.tooltip_text = le.text
+			row.add_child(le)
+
+			var pick_btn = Button.new()
+			pick_btn.text = "..."
+			pick_btn.custom_minimum_size = Vector2(28, 0)
+			var capture_idx = idx
+			var capture_le = le
+			pick_btn.pressed.connect(func():
+				var dialog = EditorFileDialog.new()
+				dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
+				for f in item_hint_string.split(","):
+					dialog.add_filter(f.strip_edges())
+				panel.add_child(dialog)
+				dialog.popup_centered(Vector2(900, 700))
+				var capture_linked2      = linked_array
+				var capture_linked_def2  = linked_default
+				dialog.file_selected.connect(func(path: String):
+					# Update the scenes array
+					var upd: Array = brick_instance.get_property(property_name)
+					if typeof(upd) != TYPE_ARRAY: upd = []
+					while upd.size() <= capture_idx: upd.append("")
+					upd[capture_idx] = path
+					brick_instance.set_property(property_name, upd)
+					# Ensure the linked array (pool_sizes) has a matching entry
+					if not capture_linked2.is_empty():
+						var linked_upd: Array = brick_instance.get_property(capture_linked2)
+						if typeof(linked_upd) != TYPE_ARRAY: linked_upd = []
+						while linked_upd.size() <= capture_idx:
+							linked_upd.append(capture_linked_def2)
+						brick_instance.set_property(capture_linked2, linked_upd)
+					panel._save_graph_to_metadata()
+					dialog.queue_free()
+					# Rebuild the list so the LineEdit shows the new path cleanly
+					_build_array_property_list(
+						list_vbox, graph_node, brick_instance,
+						property_name, item_hint, item_hint_string, item_label_text,
+						capture_linked2, capture_linked_def2
+					)
+					graph_node.reset_size()
+				)
+			)
+			row.add_child(pick_btn)
+
+			# If this array has a linked value (e.g. pool_sizes), show an editable
+			# field for it inline on the same row, right after the file picker.
+			if not linked_array.is_empty():
+				var linked_arr: Array = brick_instance.get_property(linked_array)
+				if typeof(linked_arr) != TYPE_ARRAY: linked_arr = []
+				var linked_val = linked_arr[idx] if idx < linked_arr.size() else linked_default
+				var linked_le = LineEdit.new()
+				_select_line_edit_text_on_focus(linked_le)
+				linked_le.text = str(linked_val)
+				linked_le.placeholder_text = linked_default
+				linked_le.custom_minimum_size = Vector2(64, 0)
+				linked_le.tooltip_text = "Pool size (integer or variable name)"
+				var capture_linked_idx = idx
+				linked_le.text_changed.connect(func(val: String):
+					var lupd: Array = brick_instance.get_property(linked_array)
+					if typeof(lupd) != TYPE_ARRAY: lupd = []
+					while lupd.size() <= capture_linked_idx: lupd.append(linked_default)
+					lupd[capture_linked_idx] = val
+					brick_instance.set_property(linked_array, lupd)
+					panel._save_graph_to_metadata()
+				)
+				row.add_child(linked_le)
+
+		# Remove button
+		var rm_btn = Button.new()
+		rm_btn.text = "-"
+		rm_btn.custom_minimum_size = Vector2(28, 0)
+		var capture_idx_rm = idx
+		rm_btn.pressed.connect(func():
+			var upd: Array = brick_instance.get_property(property_name)
+			if typeof(upd) != TYPE_ARRAY: upd = []
+			upd.remove_at(capture_idx_rm)
+			brick_instance.set_property(property_name, upd)
+			# Sync linked array if set
+			if not linked_array.is_empty():
+				var linked_upd: Array = brick_instance.get_property(linked_array)
+				if typeof(linked_upd) != TYPE_ARRAY: linked_upd = []
+				if capture_idx_rm < linked_upd.size():
+					linked_upd.remove_at(capture_idx_rm)
+					brick_instance.set_property(linked_array, linked_upd)
+			# Sync editable waypoint helper nodes for 3D and 2D waypoint actuators.
+			if property_name == "waypoints":
+				if panel.current_node is Node3D:
+					var WaypointPathActuator = load("res://addons/logic_bricks/bricks/actuators/3d/waypoint_path_actuator.gd")
+					if WaypointPathActuator:
+						WaypointPathActuator.sync_waypoint_nodes(panel.current_node, brick_instance)
+				elif panel.current_node is Node2D:
+					var WaypointPath2DActuator = load("res://addons/logic_bricks/bricks/actuators/2d/waypoint_path_2d_actuator.gd")
+					if WaypointPath2DActuator:
+						WaypointPath2DActuator.sync_waypoint_nodes(panel.current_node, brick_instance)
+			panel._save_graph_to_metadata()
+			_build_array_property_list(
+				list_vbox, graph_node, brick_instance,
+				property_name, item_hint, item_hint_string, item_label_text,
+				linked_array, linked_default
+			)
+			graph_node.reset_size()
+		)
+		row.add_child(rm_btn)
+		list_vbox.add_child(row)
+
+
+func _get_all_animations_in_scene() -> Array[String]:
+	# Recursively search panel.current_node's entire subtree for AnimationPlayer nodes
+	# and collect all unique animation names across all of them
+	var animations: Array[String] = []
+
+	if not panel.current_node:
+		return animations
+
+	var players: Array[AnimationPlayer] = []
+	_find_animation_players_recursive(panel.current_node, players)
+
+	for player in players:
+		for anim_name in player.get_animation_list():
+			if anim_name not in animations:
+				animations.append(anim_name)
+
+	animations.sort()
+	return animations
+
+
+func _find_animation_players_recursive(node: Node, result: Array[AnimationPlayer]) -> void:
+	for child in node.get_children():
+		if child is AnimationPlayer:
+			result.append(child)
+		_find_animation_players_recursive(child, result)
+
+
+func _get_animation_tree_conditions() -> Array[String]:
+	# Find the first AnimationTree under panel.current_node and collect all
+	# parameters/conditions/<name> entries exposed in its property list.
+	var conditions: Array[String] = []
+	if not panel.current_node:
+		return conditions
+	var anim_tree = _find_first_animation_tree_node(panel.current_node)
+	if not anim_tree:
+		return conditions
+	for prop in anim_tree.get_property_list():
+		var prop_name: String = str(prop.get("name", ""))
+		if prop_name.begins_with("parameters/conditions/"):
+			var cond_name = prop_name.trim_prefix("parameters/conditions/")
+			if not cond_name.is_empty() and cond_name not in conditions:
+				conditions.append(cond_name)
+	conditions.sort()
+	return conditions
+
+
+func _find_first_animation_tree_node(node: Node) -> AnimationTree:
+	for child in node.get_children():
+		if child is AnimationTree:
+			return child
+		var found = _find_first_animation_tree_node(child)
+		if found:
+			return found
+	return null
+
+
+func _rebuild_dependent_property(graph_node: GraphNode, property_name: String) -> void:
+	# Find and rebuild the UI for a property that depends on another property
+	if not graph_node.has_meta("brick_data"):
+		return
+
+	var brick_data = graph_node.get_meta("brick_data")
+	var brick_instance = brick_data["brick_instance"]
+	var properties = brick_instance.get_properties()
+
+	# Find the property control in the graph node
+	var property_control = graph_node.get_node_or_null("PropertyControl_" + property_name)
+	if not property_control:
+		# Try to find it in an HBoxContainer
+		for child in graph_node.get_children():
+			if child is HBoxContainer:
+				var ctrl = child.get_node_or_null("PropertyControl_" + property_name)
+				if ctrl:
+					property_control = ctrl
+					break
+
+	if not property_control or not property_control is OptionButton:
+		return
+
+	# Clear and repopulate the dropdown
+	var option_button: OptionButton = property_control
+	option_button.clear()
+
+	# Get the animation list (legacy path kept for other bricks that may use it)
+	var animation_list: Array[String] = []
+
+	var current_value = properties.get(property_name, "")
+	var selected_index = 0
+
+	if animation_list.is_empty():
+		option_button.add_item("(No animations found)", 0)
+		option_button.disabled = true
+	else:
+		option_button.disabled = false
+		for i in range(animation_list.size()):
+			var anim_name = animation_list[i]
+			option_button.add_item(anim_name, i)
+			option_button.set_item_metadata(i, anim_name)
+
+			if anim_name == current_value:
+				selected_index = i
+
+		option_button.selected = selected_index
+
+
+func _find_prop_nodes(graph_node: GraphNode) -> Array:
+	var result = []
+	for child in graph_node.get_children():
+		if child.has_meta("property_name"):
+			result.append(child)
+			var group_body = child.get_node_or_null("GroupBody")
+			if group_body:
+				for grandchild in group_body.get_children():
+					if grandchild.has_meta("property_name"):
+						result.append(grandchild)
+	return result
+
+
+func _update_conditional_visibility(graph_node: GraphNode, brick_instance) -> void:
+	# Update visibility of UI elements based on current property values
+	var brick_class = brick_instance.get_script().resource_path.get_file().get_basename()
+	var properties = brick_instance.get_properties()
+
+	# Define visibility rules for specific brick types
+	match brick_class:
+		"group_actuator":
+			var group_mode = str(properties.get("mode", "add")).to_lower().replace(" ", "_")
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "group_name":
+						child.visible = group_mode in ["add", "remove"]
+					elif prop_name in ["from_group", "to_group"]:
+						child.visible = group_mode == "change"
+
+		"smooth_follow_camera_actuator":
+			var on_camera := panel.current_node is Camera3D
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "camera_node_name":
+						child.visible = not on_camera
+					elif prop_name == "target_node_name":
+						child.visible = on_camera
+
+		"scale_tween_actuator", "scale_2d_actuator":  # Dedicated Scale Actuators
+			var use_tween = bool(properties.get("use_tween", false))
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name in ["duration", "transition", "ease"]:
+						child.visible = use_tween
+
+		"end_object_actuator":  # Edit Object Actuator
+			var edit_type = properties.get("edit_type", "end")
+			# Normalize to lowercase
+			if typeof(edit_type) == TYPE_STRING:
+				edit_type = edit_type.to_lower()
+
+			# Find and show/hide relevant property controls
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"scene_path":
+							child.visible = (edit_type == "add_object")
+						"end_mode":
+							child.visible = (edit_type == "end_object")
+						"mesh_path":
+							child.visible = (edit_type == "replace_mesh")
+
+		"waypoint_path_actuator":  # Waypoint Path Actuator
+			var path_source = str(properties.get("path_source", "node_positions")).to_lower()
+			var path_mode = str(properties.get("path_mode", "sequential")).to_lower().replace(" ", "_")
+			var node_points = (path_source != "path3d")
+			var random_mode = node_points and path_mode == "random"
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"waypoints", "path_mode":
+							child.visible = node_points
+						"loop_mode":
+							child.visible = not random_mode
+						"avoid_immediate_repeat", "random_neighbor_count":
+							child.visible = random_mode
+						"follow_curve_tilt":
+							child.visible = (path_source == "path3d")
+
+		"move_towards_actuator":  # Steering Actuator (legacy filename retained)
+			var behavior = str(properties.get("behavior", "seek")).to_lower().replace(" ", "_")
+			var needs_target = behavior != "wander"
+			var target_mode = str(properties.get("target_mode", "group")).to_lower().replace(" ", "_")
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"navigation_agent_node_name", "use_navmesh_normal":
+							child.visible = (behavior == "path_follow")
+						"target_mode":
+							child.visible = needs_target
+						"target_name":
+							child.visible = needs_target and target_mode != "vector_variable"
+						"target_variable":
+							child.visible = needs_target and target_mode == "vector_variable"
+						"arrival_distance":
+							child.visible = behavior in ["seek", "flee", "arrive", "path_follow"]
+						"slowing_distance":
+							child.visible = (behavior == "arrive")
+						"desired_distance", "distance_tolerance":
+							child.visible = (behavior == "maintain_distance")
+						"orbit_distance", "orbit_direction":
+							child.visible = (behavior == "orbit")
+						"wander_amount", "wander_frequency":
+							child.visible = (behavior == "wander")
+						"self_terminate":
+							child.visible = behavior in ["seek", "flee", "arrive", "path_follow"]
+
+		"move_towards_2d_actuator":  # Steering 2D Actuator (legacy filename retained)
+			var behavior_2d = str(properties.get("behavior", "seek")).to_lower().replace(" ", "_")
+			var needs_target_2d = behavior_2d != "wander"
+			var target_mode_2d = str(properties.get("target_mode", "node_name")).to_lower().replace(" ", "_")
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"target_mode":
+							child.visible = needs_target_2d
+						"target_name":
+							child.visible = needs_target_2d and target_mode_2d in ["node_name", "group"]
+						"coordinate_x", "coordinate_y":
+							child.visible = needs_target_2d and target_mode_2d == "coordinates"
+						"arrival_distance":
+							child.visible = behavior_2d in ["seek", "flee", "arrive"]
+						"slowing_distance":
+							child.visible = (behavior_2d == "arrive")
+						"desired_distance", "distance_tolerance":
+							child.visible = (behavior_2d == "maintain_distance")
+						"orbit_distance", "orbit_direction":
+							child.visible = (behavior_2d == "orbit")
+						"wander_amount", "wander_frequency":
+							child.visible = (behavior_2d == "wander")
+						"use_navigation":
+							child.visible = behavior_2d in ["seek", "arrive"]
+
+		"variable_actuator":  # Variable Actuator
+			var mode = properties.get("mode", "assign")
+			# Normalize to lowercase
+			if typeof(mode) == TYPE_STRING:
+				mode = mode.to_lower()
+
+			# Show/hide fields based on mode
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"value":
+							child.visible = (mode in ["assign", "add", "replace", "prepend", "append", "add_item", "remove_item", "set_item_at_index"])
+						"source_variable":
+							child.visible = (mode == "copy")
+						"item_type":
+							child.visible = (mode in ["add_item", "remove_item", "set_item_at_index"])
+						"index":
+							child.visible = (mode in ["remove_at_index", "set_item_at_index"])
+
+		"get_variable_actuator":  # Get Variable Actuator
+			var source = properties.get("source", "node_name")
+			if typeof(source) == TYPE_STRING:
+				source = source.to_lower().replace(" ", "_")
+
+			# Only show Source Node Name when reading from a named node.
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "source_node_name":
+						child.visible = (source == "node_name")
+
+		"variable_sensor":  # Variable Sensor
+			var eval_type = properties.get("evaluation_type", "equal")
+			# Normalize to lowercase
+			if typeof(eval_type) == TYPE_STRING:
+				eval_type = eval_type.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on evaluation type
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"value":
+							child.visible = (eval_type in ["equal", "not_equal", "greater_than", "less_than", "greater_or_equal", "less_or_equal", "contains", "does_not_contain", "size_equals", "size_greater_than", "size_less_than"])
+						"min_value", "max_value":
+							child.visible = (eval_type == "interval")
+						"item_type":
+							child.visible = (eval_type in ["contains", "does_not_contain"])
+
+		"proximity_sensor":  # Proximity Sensor
+			var store_obj = properties.get("store_object", false)
+
+			# Show object_variable only when store_object is true
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "object_variable":
+						child.visible = store_obj
+
+		"random_sensor":  # Random Sensor
+			var trigger_mode = properties.get("trigger_mode", "value")
+			var use_seed = properties.get("use_seed", false)
+			var store_val = properties.get("store_value", false)
+
+			# Normalize trigger_mode
+			if typeof(trigger_mode) == TYPE_STRING:
+				trigger_mode = trigger_mode.to_lower()
+
+			# Show/hide fields based on settings
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"target_value":
+							child.visible = (trigger_mode == "value")
+						"target_min", "target_max":
+							child.visible = (trigger_mode == "range")
+						"chance_percent":
+							child.visible = (trigger_mode == "chance")
+						"seed_value":
+							child.visible = use_seed
+						"value_variable":
+							child.visible = store_val
+
+		"movement_sensor":  # Movement Sensor
+			var detection_mode = properties.get("detection_mode", "any_movement")
+
+			# Normalize detection_mode
+			if typeof(detection_mode) == TYPE_STRING:
+				detection_mode = detection_mode.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on detection mode
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"axis", "direction":
+							# Only show for specific_axis mode
+							child.visible = (detection_mode == "specific_axis")
+
+		"animation_actuator":  # Animation Actuator
+			var anim_mode = properties.get("mode", "play").to_lower().replace(" ", "_")
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"play_backwards", "from_end":
+							child.visible = (anim_mode == "play")
+						"blend_time":
+							child.visible = (anim_mode in ["play", "ping_pong", "flipper"])
+						"speed":
+							child.visible = (anim_mode != "stop" and anim_mode != "pause")
+
+		"animation_tree_actuator":  # Animation Tree Actuator
+			var tree_mode = properties.get("mode", "go_to_state")
+			if typeof(tree_mode) == TYPE_STRING:
+				tree_mode = tree_mode.to_lower().replace(" ", "_")
+			var param_type = properties.get("param_type", "float")
+			if typeof(param_type) == TYPE_STRING:
+				param_type = param_type.to_lower().replace(" ", "_")
+			for child in _find_prop_nodes(graph_node):
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"animation_tree_name":
+							child.visible = true
+						"state_name":
+							child.visible = (tree_mode in ["travel", "go_to_state"])
+						"true_condition_name", "false_condition_name":
+							child.visible = (tree_mode == "set_condition_pair")
+						"condition_name", "condition_value":
+							child.visible = (tree_mode in ["set_condition", "set_condition_value"])
+						"parameter_name", "param_type":
+							child.visible = (tree_mode == "set_parameter")
+						"param_float":
+							child.visible = (tree_mode == "set_parameter" and param_type == "float")
+						"param_int":
+							child.visible = (tree_mode == "set_parameter" and param_type == "int")
+						"param_bool":
+							child.visible = (tree_mode == "set_parameter" and param_type == "bool")
+						"param_x", "param_y":
+							child.visible = (tree_mode == "set_parameter" and param_type == "vector2")
+						"state_machine_path", "parameter_path":
+							child.visible = false
+
+		"sprite_frames_actuator", "sprite_animation_2d_actuator":  # Sprite Frames / Sprite Animation 2D Actuator
+			var sf_mode = properties.get("mode", "play").to_lower()
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"animation_name", "loop", "speed_scale":
+							child.visible = (sf_mode == "play")
+
+		"motion_actuator":  # Motion Actuator
+			var motion_type = properties.get("motion_type", "location")
+			var movement_method = properties.get("movement_method", "character_velocity")
+
+			# Normalize
+			if typeof(motion_type) == TYPE_STRING:
+				motion_type = motion_type.to_lower().replace(" ", "_")
+			if typeof(movement_method) == TYPE_STRING:
+				movement_method = movement_method.to_lower().replace(" ", "_")
+
+			var is_location = (motion_type == "location")
+			var is_character_velocity = (movement_method == "character_velocity")
+
+			# Show/hide fields based on motion type and movement method
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"movement_method":
+							# Only shown for location type
+							child.visible = is_location
+						"call_move_and_slide":
+							# Only relevant when using character velocity
+							child.visible = is_location and is_character_velocity
+
+		"physics_actuator":  # Physics Actuator
+			var physics_action = properties.get("physics_action", "suspend")
+
+			# Normalize
+			if typeof(physics_action) == TYPE_STRING:
+				physics_action = physics_action.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on physics action
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"mass":
+							child.visible = (physics_action == "set_mass")
+						"gravity_scale":
+							child.visible = (physics_action == "set_gravity_scale")
+						"linear_damp":
+							child.visible = (physics_action == "set_linear_damping")
+						"angular_damp":
+							child.visible = (physics_action == "set_angular_damping")
+
+		"collision_sensor":  # Collision Sensor
+			var filter_type = properties.get("filter_type", "any")
+
+			# Normalize
+			if typeof(filter_type) == TYPE_STRING:
+				filter_type = filter_type.to_lower()
+
+			# Show filter_value only when filtering by group or name
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "filter_value":
+						child.visible = (filter_type in ["group", "name"])
+
+		"random_actuator":  # Random Actuator
+			var distribution = properties.get("distribution", "int_uniform")
+			var use_seed = properties.get("use_seed", false)
+
+			# Normalize distribution
+			if typeof(distribution) == TYPE_STRING:
+				distribution = distribution.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on distribution type
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						# Bool properties
+						"bool_value":
+							child.visible = (distribution == "bool_constant")
+						"bool_probability":
+							child.visible = (distribution == "bool_bernoulli")
+						# Int properties
+						"int_value":
+							child.visible = (distribution == "int_constant")
+						"int_min", "int_max":
+							child.visible = (distribution == "int_uniform")
+						"int_lambda":
+							child.visible = (distribution == "int_poisson")
+						# Float properties
+						"float_value":
+							child.visible = (distribution == "float_constant")
+						"float_min", "float_max":
+							child.visible = (distribution == "float_uniform")
+						"float_mean", "float_stddev":
+							child.visible = (distribution == "float_normal")
+						"float_lambda":
+							child.visible = (distribution == "float_neg_exp")
+						# Seed
+						"seed_value":
+							child.visible = use_seed
+
+		"scene_actuator":  # Scene Actuator
+			var mode = properties.get("mode", "restart")
+
+			# Normalize mode
+			if typeof(mode) == TYPE_STRING:
+				mode = mode.to_lower().replace(" ", "_")
+
+			# Hide scene_path when mode is restart
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "scene_path":
+						child.visible = (mode == "set_scene")
+
+		"object_shake_2d_actuator":
+			var shake_type = str(properties.get("shake_type", "translate")).to_lower().replace(" ", "_")
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name in ["x", "y"]:
+						child.visible = shake_type in ["translate", "scale"]
+					elif prop_name == "rotation_degrees":
+						child.visible = shake_type == "rotate"
+
+		"parent_actuator", "parent_2d_actuator":  # Parent Actuator
+			var mode = properties.get("mode", "set_parent")
+			var target_mode = properties.get("parent_target_mode", "node_name")
+
+			# Normalize modes
+			if typeof(mode) == TYPE_STRING:
+				mode = mode.to_lower().replace(" ", "_")
+			if typeof(target_mode) == TYPE_STRING:
+				target_mode = target_mode.to_lower().replace(" ", "_")
+
+			# Only show the target field selected by Parent Target Mode.
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"parent_target_mode":
+							child.visible = (mode == "set_parent")
+						"parent_node":
+							child.visible = (mode == "set_parent" and target_mode == "node_name")
+						"parent_group":
+							child.visible = (mode == "set_parent" and target_mode == "group")
+
+		"property_actuator":  # Property Actuator
+			var node_type = properties.get("node_type", "node_3d")
+			if typeof(node_type) == TYPE_STRING:
+				node_type = node_type.to_lower().replace(" ", "_")
+				var node_type_aliases := {
+					"node": "node_3d",
+					"mesh_instance": "mesh_instance_3d",
+					"collision_shape": "collision_shape_3d",
+					"light": "light_3d",
+					"rigid_body": "rigid_body_3d",
+					"character_body": "character_body_3d",
+					"camera": "camera_3d",
+					"sprite": "sprite_3d",
+				}
+				node_type = node_type_aliases.get(node_type, node_type)
+
+			# All groups and their node type prefix
+			var group_type_map = {
+				"_group_n3d_visibility": "node_3d",
+				"_group_n3d_transform":  "node_3d",
+				"_group_mesh_basic":     "mesh_instance_3d",
+				"_group_col_basic":      "collision_shape_3d",
+				"_group_light_basic":    "light_3d",
+				"_group_light_color":    "light_3d",
+				"_group_light_shadow":   "light_3d",
+				"_group_rb_basic":       "rigid_body_3d",
+				"_group_rb_damping":     "rigid_body_3d",
+				"_group_cb_basic":       "character_body_3d",
+				"_group_cb_floor":       "character_body_3d",
+				"_group_anim_basic":     "animation_player",
+				"_group_ctrl_basic":     "control",
+				"_group_ctrl_transform": "control",
+				"_group_lbl_basic":      "label",
+				"_group_btn_basic":      "button",
+				"_group_cam_basic":      "camera_3d",
+				"_group_spr_basic":     "sprite_3d",
+				"_group_spr_display":   "sprite_3d",
+				"_group_spr_frames":    "sprite_3d",
+				"_group_custom":         "custom",
+			}
+			# All property keys and their node type
+			var prop_type_map = {
+				"n3d_visible": "node_3d", "n3d_pos_x": "node_3d", "n3d_pos_y": "node_3d",
+				"n3d_pos_z": "node_3d", "n3d_rot_x": "node_3d", "n3d_rot_y": "node_3d",
+				"n3d_rot_z": "node_3d", "n3d_scale_x": "node_3d", "n3d_scale_y": "node_3d",
+				"n3d_scale_z": "node_3d",
+				"mesh_visible": "mesh_instance_3d", "mesh_cast_shadow": "mesh_instance_3d",
+				"col_disabled": "collision_shape_3d",
+				"light_visible": "light_3d", "light_energy": "light_3d",
+				"light_color": "light_3d", "light_shadow": "light_3d",
+				"rb_freeze": "rigid_body_3d", "rb_mass": "rigid_body_3d",
+				"rb_gravity_scale": "rigid_body_3d", "rb_linear_damp": "rigid_body_3d",
+				"rb_angular_damp": "rigid_body_3d",
+				"cb_up_dir_y": "character_body_3d", "cb_max_slides": "character_body_3d",
+				"cb_floor_max_angle": "character_body_3d", "cb_stop_on_slope": "character_body_3d",
+				"cb_block_on_wall": "character_body_3d", "cb_slide_on_ceiling": "character_body_3d",
+				"anim_speed_scale": "animation_player",
+				"ctrl_visible": "control", "ctrl_modulate": "control",
+				"ctrl_size_x": "control", "ctrl_size_y": "control",
+				"ctrl_pos_x": "control", "ctrl_pos_y": "control",
+				"ctrl_rotation": "control", "ctrl_scale_x": "control", "ctrl_scale_y": "control",
+				"lbl_text": "label", "lbl_visible": "label", "lbl_modulate": "label",
+				"btn_disabled": "button", "btn_text": "button", "btn_visible": "button",
+				"cam_fov": "camera_3d", "cam_near": "camera_3d",
+				"cam_far": "camera_3d", "cam_current": "camera_3d",
+				"spr_visible": "sprite_3d", "spr_modulate": "sprite_3d",
+				"spr_flip_h": "sprite_3d", "spr_flip_v": "sprite_3d",
+				"spr_pixel_size": "sprite_3d", "spr_billboard": "sprite_3d",
+				"spr_transparent": "sprite_3d", "spr_shaded": "sprite_3d",
+				"spr_double_sided": "sprite_3d", "spr_frame": "sprite_3d",
+				"spr_hframes": "sprite_3d", "spr_vframes": "sprite_3d",
+				"custom_property": "custom", "custom_value": "custom",
+			}
+
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name in group_type_map:
+						child.visible = (group_type_map[prop_name] == node_type)
+					elif prop_name in prop_type_map:
+						child.visible = (prop_type_map[prop_name] == node_type)
+				# Also check inside group bodies
+				elif child is VBoxContainer:
+					for subchild in child.get_children():
+						if subchild.has_meta("property_name"):
+							var prop_name = subchild.get_meta("property_name")
+							if prop_name in prop_type_map:
+								# Parent group visibility handles this —
+								# individual items inside groups don't need separate handling
+								pass
+
+		"mouse_sensor":  # Mouse Sensor
+			var detection_type = properties.get("detection_type", "button")
+
+			# Normalize
+			if typeof(detection_type) == TYPE_STRING:
+				detection_type = detection_type.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on detection type
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"mouse_button", "button_state":
+							child.visible = (detection_type == "button")
+						"wheel_direction":
+							child.visible = (detection_type == "wheel")
+						"movement_threshold":
+							child.visible = (detection_type == "movement")
+						"target_node_name":
+							child.visible = (detection_type == "hover_object")
+						"area_node_name":
+							child.visible = false
+
+		"mouse_actuator":  # Mouse Actuator
+			var mode = properties.get("mode", "cursor_visibility")
+
+			# Normalize
+			if typeof(mode) == TYPE_STRING:
+				mode = mode.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on mode
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"cursor_visible":
+							child.visible = (mode == "cursor_visibility")
+						"use_x_axis", "use_y_axis", "x_target", "y_target", "x_sensitivity", "y_sensitivity", "x_invert", "y_invert", "x_threshold", "y_threshold", "x_min_degrees", "x_max_degrees", "y_min_degrees", "y_max_degrees", "x_rotation_axis", "y_rotation_axis", "x_use_local", "y_use_local", "recenter_cursor":
+							child.visible = (mode == "mouse_look")
+						"mouse_turn_speed", "mouse_facing_axis":
+							child.visible = (mode == "look_towards")
+						"mouse_target", "mouse_lock_y":
+							child.visible = (mode in ["look_towards", "move_towards_cursor", "move_to_mouse_click"])
+						"mouse_velocity", "mouse_acceleration", "mouse_arrival_distance":
+							child.visible = (mode in ["move_towards_cursor", "move_to_mouse_click"])
+						"click_button":
+							child.visible = (mode == "move_to_mouse_click")
+
+		"mouse_2d_actuator":  # Mouse 2D Actuator
+			var mode = properties.get("mode", "cursor_visibility")
+
+			# Normalize
+			if typeof(mode) == TYPE_STRING:
+				mode = mode.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on mode. Keep 3D-only fields out of the 2D actuator.
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"cursor_visible":
+							child.visible = (mode == "cursor_visibility")
+						"use_x_axis", "use_y_axis", "x_target", "y_target", "x_sensitivity", "y_sensitivity", "x_invert", "y_invert", "x_threshold", "y_threshold", "x_min_degrees", "x_max_degrees", "y_min_degrees", "y_max_degrees", "recenter_cursor":
+							child.visible = (mode == "mouse_look")
+						"mouse_turn_speed", "mouse_facing_axis":
+							child.visible = (mode == "look_towards")
+						"mouse_target":
+							child.visible = (mode in ["look_towards", "move_towards_cursor", "move_to_mouse_click"])
+						"mouse_velocity", "mouse_acceleration", "mouse_arrival_distance":
+							child.visible = (mode in ["move_towards_cursor", "move_to_mouse_click"])
+						"click_button":
+							child.visible = (mode == "move_to_mouse_click")
+
+		"edit_object_actuator":  # Edit Object Actuator
+			var edit_type = properties.get("edit_type", "end")
+
+			# Normalize
+			if typeof(edit_type) == TYPE_STRING:
+				edit_type = edit_type.to_lower().replace(" ", "_")
+
+			# Show/hide fields based on edit_type
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"spawn_object", "spawn_point", "velocity_x", "velocity_y", "velocity_z", "velocity_local", "lifespan":
+							child.visible = (edit_type == "add_object")
+						"end_mode":
+							child.visible = (edit_type == "end_object")
+						"mesh_path":
+							child.visible = (edit_type == "replace_mesh")
+
+		"audio_2d_actuator":  # Audio 2D Actuator
+			var mode = properties.get("mode", "play")
+			if typeof(mode) == TYPE_STRING:
+				mode = mode.to_lower().replace(" ", "_")
+			var is_play     = (mode == "play")
+			var is_fade     = (mode in ["fade_in", "fade_out"])
+			var needs_file  = (mode in ["play", "fade_in"])
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"sound_file":
+							child.visible = needs_file
+						"player_type", "play_mode", "loop", "pitch_random", "audio_bus":
+							child.visible = is_play
+						"fade_duration":
+							child.visible = is_fade
+						"volume", "pitch":
+							child.visible = (mode != "stop")
+
+		"modulate_actuator":  # Modulate Actuator
+			var transition = properties.get("transition", false)
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "transition_speed":
+						child.visible = transition
+
+		"visibility_actuator":  # Visibility Actuator
+			var target_mode = properties.get("target_mode", "self")
+			if typeof(target_mode) == TYPE_STRING:
+				target_mode = target_mode.to_lower()
+			# No extra fields to show/hide — target_mode controls @export presence via code gen
+
+		"progress_bar_actuator":  # Progress Bar Actuator
+			var set_value = properties.get("set_value", true)
+			var set_min = properties.get("set_min", false)
+			var set_max = properties.get("set_max", false)
+			var transition = properties.get("transition", false)
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"value":
+							child.visible = set_value
+						"min_value":
+							child.visible = set_min
+						"max_value":
+							child.visible = set_max
+						"transition_speed":
+							child.visible = transition and set_value
+
+		"tween_actuator":  # Tween Actuator
+			var target_mode = properties.get("target_mode", "self")
+			if typeof(target_mode) == TYPE_STRING:
+				target_mode = target_mode.to_lower()
+			# No fields conditionally hidden — all always relevant
+
+		"impulse_actuator":  # Impulse Actuator
+			var impulse_type = properties.get("impulse_type", "central")
+			if typeof(impulse_type) == TYPE_STRING:
+				impulse_type = impulse_type.to_lower()
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"pos_x", "pos_y", "pos_z":
+							child.visible = (impulse_type == "positional")
+						"space":
+							child.visible = (impulse_type != "torque")
+
+		"music_actuator":  # Music Actuator
+			var music_mode = properties.get("music_mode", "tracks")
+			if typeof(music_mode) == TYPE_STRING:
+				music_mode = music_mode.to_lower()
+			var is_tracks  = (music_mode == "tracks")
+			var is_set     = (music_mode == "set")
+			var is_control = (music_mode == "control")
+			var control_action = properties.get("control_action", "play")
+			if typeof(control_action) == TYPE_STRING:
+				control_action = control_action.to_lower()
+			var is_crossfade = (control_action == "crossfade")
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"tracks", "volume_db", "loop", "audio_bus", "persist":
+							child.visible = is_tracks
+						"set_track", "set_play":
+							child.visible = is_set
+						"control_action":
+							child.visible = is_control
+						"to_track", "crossfade_time":
+							child.visible = is_control and is_crossfade
+
+		"screen_flash_actuator":  # Screen Flash Actuator — no conditional fields
+			pass
+
+		"screen_shake_actuator":  # Screen Shake Actuator — hide tune fields when export_params is on
+			var export_params = properties.get("export_params", false)
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"trauma", "max_offset", "decay", "noise_speed":
+							child.visible = not export_params
+
+		"rumble_actuator":  # Rumble Actuator
+			var action = properties.get("action", "vibrate")
+			if typeof(action) == TYPE_STRING:
+				action = action.to_lower()
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"weak_motor", "strong_motor", "duration":
+							child.visible = (action == "vibrate")
+
+		"shader_param_actuator":  # Shader Parameter Actuator (legacy — removed from menu)
+			pass
+
+		"light_actuator":  # Light Actuator
+			var light_type = properties.get("light_type", "omni").to_lower().replace(" ", "_")
+			var fx         = properties.get("fx", "normal").to_lower().replace(" ", "_")
+			var is_spot    = (light_type == "spotlight3d")
+			var is_omni_or_spot = (light_type in ["omnilight3d", "spotlight3d"])
+			for node in _find_prop_nodes(graph_node):
+				var prop_name = node.get_meta("property_name")
+				match prop_name:
+					"set_range", "light_range":
+						node.visible = is_omni_or_spot
+					"set_spot_angle", "spot_angle", "set_spot_attenuation", "spot_attenuation":
+						node.visible = is_spot
+					"fx_params_group":
+						node.visible = (fx != "normal")
+					"flicker_normal_energy", "flicker_min", "flicker_max", "flicker_idle_min", "flicker_idle_max", "flicker_burst_duration":
+						node.visible = (fx == "flicker")
+					"strobe_frequency", "strobe_on_energy", "strobe_off_energy":
+						node.visible = (fx == "strobe")
+					"pulse_min", "pulse_max", "pulse_speed":
+						node.visible = (fx == "pulse")
+					"fade_target", "fade_speed":
+						node.visible = (fx in ["fade_in", "fade_out"])
+
+		"third_person_camera_actuator":  # 3rd Person Camera Actuator
+			var input_mode = properties.get("input_mode", "mouse").to_lower()
+			var use_joy = input_mode in ["joystick", "both"]
+			for node in _find_prop_nodes(graph_node):
+				var prop_name = node.get_meta("property_name")
+				match prop_name:
+					"joy_group", "joystick_device", "joy_stick", "joy_deadzone", "joy_sensitivity":
+						node.visible = use_joy
+					"capture_mouse":
+						node.visible = input_mode in ["mouse", "both"]
+
+		"camera_zoom_actuator":  # Camera Zoom Actuator
+			var camera_type = properties.get("camera_type", "camera_3d")
+			if typeof(camera_type) == TYPE_STRING:
+				camera_type = camera_type.to_lower().replace(" ", "_")
+			var transition = properties.get("transition", true)
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"fov":
+							child.visible = (camera_type == "camera_3d")
+						"zoom":
+							child.visible = (camera_type == "camera_2d")
+						"transition_speed":
+							child.visible = transition
+
+		"object_pool_actuator":  # Object Pool Actuator
+			var action = properties.get("action", "spawn")
+			if typeof(action) == TYPE_STRING:
+				action = action.to_lower().replace(" ", "_")
+			var spawn_at_self = properties.get("spawn_at_self", true)
+			var is_spawn = (action == "spawn")
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"pool_sizes":
+							child.visible = false  # managed automatically by the scenes array
+						"scenes", "spawn_mode", "spawn_delay", "spawn_at_self", "inherit_rotation", "lifespan":
+							child.visible = is_spawn
+						"spawn_node":
+							child.visible = is_spawn and not spawn_at_self
+
+		"game_actuator":  # Game Actuator
+			var action = properties.get("action", "exit")
+
+			# Normalize
+			if typeof(action) == TYPE_STRING:
+				action = action.to_lower()
+
+			# Show/hide fields based on action
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"save_path":
+							child.visible = (action == "save" or action == "load")
+						"screenshot_path":
+							child.visible = (action == "screenshot")
+
+		"controller", "script_controller":  # Controller
+			var all_states = properties.get("all_states", false)
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					if prop_name == "state_id":
+						child.visible = not all_states
+
+		"rotate_towards_actuator":  # Rotate Towards Actuator
+			var axes = properties.get("axes", "y_only")
+			if typeof(axes) == TYPE_STRING:
+				axes = axes.to_lower().split("(")[0].strip_edges().replace(" ", "_")
+			var clamp_x = properties.get("clamp_x", false)
+			var show_clamp = (axes in ["x_only", "both"])
+
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"clamp_x":
+							child.visible = show_clamp
+						"clamp_x_min", "clamp_x_max":
+							child.visible = show_clamp and clamp_x
+
+		"input_map_sensor":  # Input Map Sensor
+			var input_mode = properties.get("input_mode", "pressed")
+
+			# Normalize
+			if typeof(input_mode) == TYPE_STRING:
+				input_mode = input_mode.to_lower().replace(" ", "_")
+
+			var is_button = input_mode in ["pressed", "just_pressed", "just_released"]
+			var is_axis = (input_mode == "axis")
+
+			for child in graph_node.get_children():
+				if child.has_meta("property_name"):
+					var prop_name = child.get_meta("property_name")
+					match prop_name:
+						"action_name":
+							child.visible = is_button
+						"negative_action", "positive_action", "store_in", "deadzone":
+							child.visible = is_axis
+						"invert":
+							child.visible = true  # Invert is useful for all input modes
+
+	# Group picker buttons follow their mode field without affecting the text field itself.
+	_update_group_picker_buttons(graph_node, brick_instance)
+
+
+func _logic_variable_type(variable_name: String) -> String:
+	var wanted := variable_name.strip_edges()
+	if wanted.is_empty() or panel == null:
+		return ""
+	# Prefer the panel's live data so type-aware bricks react immediately to editor changes.
+	for data in panel.variables_data:
+		if data is Dictionary and str(data.get("name", "")).strip_edges() == wanted:
+			return str(data.get("type", ""))
+	for data in panel.global_vars_data:
+		if data is Dictionary and str(data.get("name", "")).strip_edges() == wanted:
+			return str(data.get("type", ""))
+	return ""
+
+func _variable_brick_hint_override(brick_instance, property_name: String, fallback: String) -> String:
+	var script_name: String = str(brick_instance.get_script().resource_path.get_file().get_basename())
+	var var_type := _logic_variable_type(str(brick_instance.get_property("variable_name", "")))
+	if var_type == "Array":
+		if script_name == "variable_sensor" and property_name == "evaluation_type":
+			return "Contains:contains,Does Not Contain:does_not_contain,Is Empty:is_empty,Is Not Empty:is_not_empty,Size Equals:size_equals,Size Greater Than:size_greater_than,Size Less Than:size_less_than,Changed:changed"
+		if script_name == "variable_actuator" and property_name == "mode":
+			return "Add Item:add_item,Remove Item:remove_item,Remove At Index:remove_at_index,Set Item At Index:set_item_at_index,Clear:clear,Assign:assign,Copy:copy"
+	elif var_type == "String" and script_name == "variable_actuator" and property_name == "mode":
+		return "Replace:replace,Add Before:prepend,Add After:append,Copy:copy"
+	return fallback
+
+
+func _refresh_variable_brick_operation_control(graph_node: GraphNode, brick_instance) -> void:
+	var script_name: String = str(brick_instance.get_script().resource_path.get_file().get_basename())
+	var property_name := "evaluation_type" if script_name == "variable_sensor" else ("mode" if script_name == "variable_actuator" else "")
+	if property_name.is_empty():
+		return
+	var option: OptionButton = null
+	for child in graph_node.get_children():
+		if child is HBoxContainer:
+			var candidate = child.get_node_or_null("PropertyControl_" + property_name)
+			if candidate is OptionButton:
+				option = candidate
+				break
+	if option == null:
+		return
+	var fallback := "Equal,Not Equal,Interval,Changed,Greater Than,Less Than,Greater or Equal,Less or Equal" if script_name == "variable_sensor" else "Assign:assign,Adjust By:add,Copy:copy,Toggle:toggle"
+	var hint := _variable_brick_hint_override(brick_instance, property_name, fallback)
+	var current := str(brick_instance.get_property(property_name, ""))
+	option.clear()
+	var selected := -1
+	var parts = hint.split(",")
+	for i in range(parts.size()):
+		var part := str(parts[i]).strip_edges()
+		var display := part
+		var actual := part.to_lower().replace(" ", "_")
+		if ":" in part:
+			var pair = part.split(":", false, 1)
+			display = pair[0]
+			actual = pair[1]
+		option.add_item(display, i)
+		option.set_item_metadata(i, actual)
+		if actual == current:
+			selected = i
+	if selected < 0 and option.item_count > 0:
+		# Only coerce an incompatible operation after the variable type is known.
+		# During project/node loading variables_data may briefly be empty; mutating
+		# here would destroy a saved Array operation such as add_item/contains.
+		var var_type := _logic_variable_type(str(brick_instance.get_property("variable_name", "")))
+		if not var_type.is_empty():
+			selected = 0
+			brick_instance.set_property(property_name, str(option.get_item_metadata(0)))
+	option.selected = selected
+	_update_conditional_visibility(graph_node, brick_instance)
+	graph_node.reset_size()
+
+
+
+
+func _create_node_reference_picker(graph_node: GraphNode, brick_instance, prop_def: Dictionary, property_name: String, property_value) -> Control:
+	var hbox := HBoxContainer.new()
+	var label := Label.new()
+	label.text = _format_property_name(property_name) + ":"
+	hbox.add_child(label)
+
+	var accepted_types := _accepted_node_types(prop_def, property_name)
+	var line_edit = NodeReferenceLineEdit.new()
+	line_edit.configure(panel.editor_interface, property_name, accepted_types, panel.current_node)
+	_select_line_edit_text_on_focus(line_edit)
+	line_edit.name = "PropertyControl_" + property_name
+	line_edit.text = str(property_value)
+	line_edit.placeholder_text = "Enter " + _format_property_name(property_name).to_lower()
+	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_edit.text_changed.connect(_on_property_changed.bind(graph_node, property_name))
+	line_edit.node_reference_dropped.connect(_on_property_changed.bind(graph_node, property_name))
+	hbox.add_child(line_edit)
+
+	var menu_button := MenuButton.new()
+	menu_button.text = "▾"
+	menu_button.tooltip_text = "Choose a compatible scene node"
+	menu_button.custom_minimum_size = Vector2(28, 0)
+	hbox.add_child(menu_button)
+
+	var popup := menu_button.get_popup()
+	var rebuild_popup = func():
+		popup.clear()
+		var picker_root: Node = panel.current_node
+		if str(prop_def.get("node_picker_scope", "scene")) == "scene" and panel.editor_interface != null:
+			picker_root = panel.editor_interface.get_edited_scene_root()
+		var matches := _compatible_child_nodes(picker_root, accepted_types)
+		if picker_root != panel.current_node and _node_matches_types(picker_root, accepted_types):
+			matches.push_front(picker_root)
+		var item_id := 0
+
+		# Collision sensors deliberately use a blank field to mean self when the
+		# Logic Bricks owner is already the matching Area node.
+		if property_name == "area_node_name" and _node_matches_types(panel.current_node, accepted_types):
+			popup.add_item("Use Self (" + str(panel.current_node.name) + ")", item_id)
+			popup.set_item_metadata(popup.get_item_index(item_id), "")
+			item_id += 1
+			if not matches.is_empty():
+				popup.add_separator()
+
+		for child in matches:
+			var relative_path := str(picker_root.get_path_to(child))
+			popup.add_item(relative_path, item_id)
+			var stored_value := str(child.name)
+			if str(prop_def.get("node_reference_store", "name")) == "path" and panel.current_node != null:
+				stored_value = str(panel.current_node.get_path_to(child))
+			popup.set_item_metadata(popup.get_item_index(item_id), stored_value)
+			item_id += 1
+
+		if matches.is_empty() and not _node_matches_types(panel.current_node, accepted_types):
+			var create_type := _creatable_reference_type(accepted_types)
+			if not create_type.is_empty():
+				if item_id > 0:
+					popup.add_separator()
+				popup.add_item("+ Create " + create_type, item_id)
+				popup.set_item_metadata(popup.get_item_index(item_id), {"create": create_type})
+			elif item_id == 0:
+				popup.add_item("No compatible child nodes", item_id)
+				popup.set_item_disabled(popup.get_item_index(item_id), true)
+
+	popup.about_to_popup.connect(rebuild_popup)
+	popup.id_pressed.connect(func(id: int):
+		var index := popup.get_item_index(id)
+		if index < 0:
+			return
+		var selected = popup.get_item_metadata(index)
+		if selected is Dictionary and selected.has("create"):
+			_create_reference_child(str(selected["create"]), line_edit, graph_node, property_name)
+			return
+		var value := str(selected)
+		line_edit.text = value
+		line_edit.caret_column = value.length()
+		_on_property_changed(value, graph_node, property_name)
+	)
+	rebuild_popup.call()
+	return hbox
+
+
+func _compatible_child_nodes(root: Node, accepted_types: Array) -> Array[Node]:
+	var result: Array[Node] = []
+	if root == null:
+		return result
+	var stack: Array[Node] = []
+	for child in root.get_children():
+		if child is Node:
+			stack.append(child)
+	while not stack.is_empty():
+		var node := stack.pop_front()
+		if _node_matches_types(node, accepted_types):
+			result.append(node)
+		for child in node.get_children():
+			if child is Node:
+				stack.append(child)
+	return result
+
+
+func _node_matches_types(node: Node, accepted_types: Array) -> bool:
+	if node == null:
+		return false
+	if accepted_types.is_empty():
+		return true
+	for type_name in accepted_types:
+		if node.is_class(str(type_name)):
+			return true
+	return false
+
+
+func _creatable_reference_type(accepted_types: Array) -> String:
+	if accepted_types.size() != 1:
+		return ""
+	var type_name := str(accepted_types[0])
+	return type_name if type_name in ["Area3D", "Area2D"] else ""
+
+
+func _create_reference_child(type_name: String, line_edit: LineEdit, graph_node: GraphNode, property_name: String) -> void:
+	if panel == null or panel.current_node == null or panel.editor_interface == null:
+		return
+	var created: Object = ClassDB.instantiate(type_name)
+	if not created is Node:
+		return
+	var new_node := created as Node
+	new_node.name = type_name
+	var parent: Node = panel.current_node
+	var scene_root: Node = panel.editor_interface.get_edited_scene_root()
+	var save_owner: Node = parent.owner if parent.owner != null else scene_root
+	var undo_redo: EditorUndoRedoManager = panel.editor_interface.get_editor_undo_redo()
+	undo_redo.create_action("Create " + type_name + " for Logic Bricks")
+	undo_redo.add_do_method(parent, "add_child", new_node, true)
+	if save_owner != null:
+		undo_redo.add_do_method(new_node, "set_owner", save_owner)
+	undo_redo.add_do_reference(new_node)
+	undo_redo.add_undo_method(parent, "remove_child", new_node)
+	undo_redo.commit_action()
+
+	var value := str(new_node.name)
+	line_edit.text = value
+	line_edit.caret_column = value.length()
+	_on_property_changed(value, graph_node, property_name)
+
+func _is_node_reference_property(prop_def: Dictionary, property_name: String) -> bool:
+	# Bricks may opt in/out explicitly. The naming fallback makes the feature
+	# immediately useful across existing sensors/actuators without rewriting each one.
+	if prop_def.has("node_reference"):
+		return bool(prop_def.get("node_reference", false))
+	if property_name.ends_with("_node_name"):
+		return true
+	return property_name in [
+		"camera_name",
+		"target_name",
+		"animation_tree_name",
+	]
+
+
+func _accepted_node_types(prop_def: Dictionary, property_name: String) -> Array:
+	var explicit = prop_def.get("accepted_node_types", [])
+	var result: Array = []
+	if explicit is Array:
+		for item in explicit:
+			result.append(str(item))
+	if not result.is_empty():
+		return result
+
+	# Sensible type guards for the most common specialized node references.
+	if property_name in ["camera_name", "camera_node_name", "camera_1_node_name", "camera_2_node_name", "camera_3_node_name", "camera_4_node_name"]:
+		return ["Camera3D", "Camera2D"]
+	if property_name == "animation_tree_name" or property_name == "animation_tree_node_name":
+		return ["AnimationTree"]
+	if property_name == "navigation_agent_node_name":
+		return ["NavigationAgent3D", "NavigationAgent2D"]
+	if property_name == "raycast_node_name":
+		return ["RayCast3D", "RayCast2D"]
+	if property_name == "area_node_name":
+		return ["Area3D", "Area2D"]
+	return []
+
+func _on_property_changed(value, graph_node: GraphNode, property_name: String) -> void:
+	if graph_node.has_meta("brick_data"):
+		var brick_data = graph_node.get_meta("brick_data")
+		var brick_instance = brick_data["brick_instance"]
+		brick_instance.set_property(property_name, value)
+
+		if property_name == "variable_name":
+			_refresh_variable_brick_operation_control(graph_node, brick_instance)
+
+		if property_name == "target_node" and brick_instance.get_script().resource_path.ends_with("property_actuator.gd"):
+			_refresh_target_node_property_dropdown(graph_node, brick_instance)
+
+		if brick_data.get("brick_type", "") == "controller" and property_name in ["state_id", "all_states"]:
+			_update_controller_title(graph_node, brick_instance)
+
+		_update_conditional_visibility(graph_node, brick_instance)
+		_refresh_compatibility_ui(graph_node, brick_instance)
+		panel._save_graph_to_metadata()
+
+
+func _update_controller_title(graph_node: GraphNode, brick_instance) -> void:
+	var props = brick_instance.properties
+	var all_states = props.get("all_states", false)
+	var state_id = str(props.get("state_id", ""))
+	var state_name = panel.get_state_display_name(state_id) if panel and panel.has_method("get_state_display_name") else state_id
+	if all_states:
+		graph_node.title = "Gate [ALL]"
+	else:
+		graph_node.title = "Gate [%s]" % (state_name if not state_name.is_empty() else "No State")
+
+
+func _on_instance_name_changed(new_name: String, graph_node: GraphNode, brick_instance) -> void:
+	var sanitized_name = new_name.strip_edges().to_lower().replace(" ", "_")
+	sanitized_name = sanitized_name.replace("-", "_")
+	var regex = RegEx.new()
+	regex.compile("[^a-z0-9_]")
+	sanitized_name = regex.sub(sanitized_name, "", true)
+
+	brick_instance.set_instance_name(sanitized_name)
+	panel._save_graph_to_metadata()
+
+
+func _on_debug_enabled_changed(enabled: bool, graph_node: GraphNode, brick_instance) -> void:
+	brick_instance.debug_enabled = enabled
+	panel._save_graph_to_metadata()
+
+
+func _on_debug_message_changed(new_message: String, graph_node: GraphNode, brick_instance) -> void:
+	brick_instance.debug_message = new_message
+	panel._save_graph_to_metadata()
+
+
+func _on_enum_property_changed(index: int, graph_node: GraphNode, property_name: String, property_type: int) -> void:
+	# Handle enum property changes from OptionButton
+	if not graph_node.has_meta("brick_data"):
+		return
+
+	var brick_data = graph_node.get_meta("brick_data")
+	var brick_instance = brick_data["brick_instance"]
+
+	# Get the hint_string from the brick's property definitions to derive the value
+	var prop_defs = brick_instance.get_property_definitions()
+	var hint_string = ""
+	for prop_def in prop_defs:
+		if prop_def["name"] == property_name:
+			hint_string = prop_def.get("hint_string", "")
+			break
+
+	if hint_string.is_empty():
+		return
+
+	# Get the actual OptionButton control to access its metadata
+	var option_button: OptionButton = null
+	for child in graph_node.get_children():
+		if child is HBoxContainer:
+			var control = child.get_node_or_null("PropertyControl_" + property_name)
+			if control and control is OptionButton:
+				option_button = control
+				break
+
+	var value
+
+	# Special handling for dynamic lists (they store actual values in metadata)
+	if hint_string in ["__ANIMATION_LIST__", "__ANIMATION_PLAYER_LIST__", "__STATE_LIST__", "__ANIM_TREE_CONDITION_LIST__", "__TARGET_NODE_PROPERTY_LIST__"] and option_button:
+		# Get the value directly from the item metadata
+		value = option_button.get_item_metadata(index)
+	else:
+		# Regular enums store their actual values as item metadata. This also lets
+		# type-aware variable bricks swap their operation lists dynamically.
+		if option_button and index >= 0 and index < option_button.item_count:
+			value = option_button.get_item_metadata(index)
+		else:
+			var enum_parts = hint_string.split(",")
+			if index < 0 or index >= enum_parts.size():
+				return
+			var part = enum_parts[index].strip_edges()
+			value = part.to_lower().replace(" ", "_")
+			if ":" in part:
+				value = part.split(":")[1]
+
+		# Convert to correct type
+		if property_type == TYPE_INT:
+			# Use the raw index directly — converting the enum label string to int
+			# (e.g. int("enable_monitoring")) always returns 0, which is wrong.
+			value = index
+		else:
+			value = str(value)
+
+	brick_instance.set_property(property_name, value)
+
+	# Update controller title to reflect state changes
+	var brick_class = brick_data.get("brick_class", "")
+	if brick_data.get("brick_type", "") == "controller" and property_name in ["state_id", "all_states", "logic_mode"]:
+		_update_controller_title(graph_node, brick_instance)
+
+	# When a preset is selected, populate the related value fields.
+	# Presets only write to the editable fields below them; the fields can still be numbers or variable names.
+	if ((property_name == "preset") or (brick_class in ["ObjectShakeActuator", "ObjectShake2DActuator"] and property_name == "shake_type")) and brick_instance.has_method("get_preset_values"):
+		var selected_preset = str(value) if property_name == "preset" else str(brick_instance.get_property("preset"))
+		var preset_vals = brick_instance.get_preset_values(selected_preset)
+		var field_names = []
+		if brick_class == "ScreenShakeActuator" and preset_vals.size() == 4:
+			field_names = ["trauma", "max_offset", "decay", "noise_speed"]
+		elif brick_class == "HitStopActuator" and preset_vals.size() == 2:
+			field_names = ["duration", "time_scale"]
+		elif brick_class == "ObjectShakeActuator" and preset_vals.size() == 3:
+			field_names = ["x", "y", "z"]
+		elif brick_class == "ObjectShake2DActuator":
+			var shake_type_2d = str(brick_instance.get_property("shake_type", "translate")).to_lower().replace(" ", "_")
+			if shake_type_2d == "rotate" and preset_vals.size() == 1:
+				field_names = ["rotation_degrees"]
+			elif preset_vals.size() == 2:
+				field_names = ["x", "y"]
+
+		if field_names.size() == preset_vals.size():
+			for i in field_names.size():
+				var fname = field_names[i]
+				var fval = preset_vals[i]
+				brick_instance.set_property(fname, fval)
+				for child in graph_node.get_children():
+					if child.has_meta("property_name") and child.get_meta("property_name") == fname:
+						var ctrl = child.find_child("PropertyControl_" + fname, true, false)
+						if ctrl and ctrl is LineEdit:
+							ctrl.text = fval
+						break
+
+	panel._save_graph_to_metadata()
+
+	# Update conditional visibility for fields that depend on this enum
+	_update_conditional_visibility(graph_node, brick_instance)
+	_refresh_compatibility_ui(graph_node, brick_instance)
+
+
+
+
+func _populate_dynamic_enum(option_button: OptionButton, brick_instance, property_name: String, hint_string: String, property_value) -> bool:
+	if hint_string == "__TARGET_NODE_PROPERTY_LIST__":
+		_populate_target_node_property_enum(option_button, brick_instance, property_value)
+		return true
+	if hint_string == "__STATE_LIST__":
+		var states: Array = panel.get_state_options() if panel and panel.has_method("get_state_options") else []
+		if states.is_empty():
+			option_button.add_item("(No states)", 0)
+			option_button.disabled = true
+			return true
+		var selected_index := 0
+		for i in range(states.size()):
+			var item: Dictionary = states[i]
+			option_button.add_item(str(item.get("name", item.get("id", ""))), i)
+			option_button.set_item_metadata(i, str(item.get("id", "")))
+			if str(item.get("id", "")) == str(property_value):
+				selected_index = i
+		option_button.selected = selected_index
+		if str(property_value).strip_edges().is_empty() and option_button.item_count > 0:
+			brick_instance.set_property(property_name, option_button.get_item_metadata(selected_index))
+		return true
+	return false
+
+
+func _resolve_property_actuator_target(brick_instance):
+	if panel == null or panel.current_node == null:
+		return null
+	var target_name = str(brick_instance.get_property("target_node", "self")).strip_edges()
+	if target_name.is_empty() or target_name.to_lower() == "self":
+		return panel.current_node
+	var tree = panel.current_node.get_tree()
+	if tree != null and tree.root != null:
+		var found = tree.root.find_child(target_name, true, false)
+		if found != null:
+			return found
+	return panel.current_node.find_child(target_name, true, false)
+
+
+func _populate_target_node_property_enum(option_button: OptionButton, brick_instance, property_value) -> void:
+	var target = _resolve_property_actuator_target(brick_instance)
+	if target == null:
+		option_button.add_item("(Target node not found)")
+		option_button.disabled = true
+		return
+
+	_style_target_node_property_sections(option_button)
+	option_button.disabled = false
+	option_button.add_item("(Select property)")
+	option_button.set_item_metadata(0, "")
+	var selected_index = 0
+	var editable_count = 0
+
+	# Godot's raw property list is commonly base-class first, while the Inspector
+	# displays inheritance sections most-derived first. Build category blocks in
+	# their native order, then reverse only the blocks. Property order inside each
+	# block stays untouched.
+	var sections = []
+	var orphan_properties = []
+	var current_section_name = ""
+	var current_section_properties = []
+
+	for info in target.get_property_list():
+		var usage = int(info.get("usage", 0))
+		var prop_name = str(info.get("name", ""))
+
+		if (usage & PROPERTY_USAGE_CATEGORY) != 0:
+			if not current_section_name.is_empty() and not current_section_properties.is_empty():
+				sections.append({"name": current_section_name, "properties": current_section_properties})
+			current_section_name = prop_name
+			current_section_properties = []
+			continue
+
+		if int(info.get("type", TYPE_NIL)) == TYPE_NIL:
+			continue
+		if prop_name.is_empty() or prop_name == "script":
+			continue
+		if (usage & PROPERTY_USAGE_EDITOR) == 0:
+			continue
+
+		if current_section_name.is_empty():
+			orphan_properties.append(info)
+		else:
+			current_section_properties.append(info)
+
+	if not current_section_name.is_empty() and not current_section_properties.is_empty():
+		sections.append({"name": current_section_name, "properties": current_section_properties})
+
+	sections.reverse()
+
+	# Godot exposes the attached script as its own Inspector category (usually
+	# the script filename, e.g. "soft_body_3d.gd"). It appears above the native
+	# class sections in the Inspector, but it is rarely useful in this brick, so
+	# keep the native node properties first and move that whole category last.
+	var script_section = null
+	var attached_script = target.get_script()
+	if attached_script != null:
+		var script_file = str(attached_script.resource_path.get_file())
+		if not script_file.is_empty():
+			for i in range(sections.size() - 1, -1, -1):
+				if str(sections[i].get("name", "")) == script_file:
+					script_section = sections[i]
+					sections.remove_at(i)
+					break
+
+	# Script-exported properties that arrive outside a category belong at the
+	# bottom for the same reason.
+	if not orphan_properties.is_empty():
+		sections.push_back({"name": "Script", "properties": orphan_properties})
+	if script_section != null:
+		sections.push_back(script_section)
+
+	for section in sections:
+		option_button.add_separator(str(section["name"]))
+		for info in section["properties"]:
+			var prop_name = str(info.get("name", ""))
+			var index = option_button.item_count
+			option_button.add_item(prop_name.replace("_", " ").capitalize())
+			option_button.set_item_metadata(index, prop_name)
+			editable_count += 1
+			if prop_name == str(property_value):
+				selected_index = index
+
+	if editable_count == 0:
+		option_button.clear()
+		option_button.add_item("(No editable Inspector properties)")
+		option_button.disabled = true
+		selected_index = 0
+	option_button.selected = selected_index
+	option_button.tooltip_text = "Inspector properties for %s (%s)" % [str(target.name), target.get_class()]
+
+
+func _style_target_node_property_sections(option_button: OptionButton) -> void:
+	var popup = option_button.get_popup()
+	if popup == null:
+		return
+
+	var header_color = Color(0.6, 0.3, 0.1, 0.9)
+	var header_text_color = Color.WHITE
+	if panel != null:
+		var configured_header = panel.get("_brick_actuator_color")
+		var configured_text = panel.get("_brick_header_text_color")
+		if configured_header is Color:
+			header_color = configured_header
+		if configured_text is Color:
+			header_text_color = configured_text
+
+	# PopupMenu draws labeled separators with a left and right StyleBox. Expand
+	# both underneath the label so the category reads as one colored header bar.
+	var left = StyleBoxFlat.new()
+	left.bg_color = header_color
+	left.content_margin_top = 4.0
+	left.content_margin_bottom = 4.0
+	left.set_expand_margin(SIDE_RIGHT, 96.0)
+
+	var right = StyleBoxFlat.new()
+	right.bg_color = header_color
+	right.content_margin_top = 4.0
+	right.content_margin_bottom = 4.0
+	right.set_expand_margin(SIDE_LEFT, 96.0)
+
+	popup.add_theme_stylebox_override("labeled_separator_left", left)
+	popup.add_theme_stylebox_override("labeled_separator_right", right)
+	popup.add_theme_color_override("font_separator_color", header_text_color)
+	popup.add_theme_color_override("font_separator_outline_color", Color.TRANSPARENT)
+	popup.add_theme_constant_override("separator_outline_size", 0)
+
+
+func _refresh_target_node_property_dropdown(graph_node: GraphNode, brick_instance) -> void:
+	var control = graph_node.find_child("PropertyControl_property_name", true, false)
+	if control == null or not control is OptionButton:
+		return
+	var option_button = control as OptionButton
+	var current_value = brick_instance.get_property("property_name", "")
+	option_button.clear()
+	_populate_target_node_property_enum(option_button, brick_instance, current_value)
+	if option_button.selected == 0 and not str(current_value).is_empty():
+		brick_instance.set_property("property_name", "")
+
+
+func _refresh_state_dropdown(graph_node: GraphNode, brick_instance) -> void:
+	for child in graph_node.get_children():
+		var control = child.find_child("PropertyControl_state_id", true, false)
+		if control and control is OptionButton:
+			var option_button: OptionButton = control
+			var current_value = brick_instance.get_property("state_id", "")
+			option_button.clear()
+			_populate_dynamic_enum(option_button, brick_instance, "state_id", "__STATE_LIST__", current_value)
+			option_button.disabled = option_button.item_count == 0 or (option_button.item_count == 1 and str(option_button.get_item_text(0)).begins_with("("))
+			if not option_button.disabled and option_button.selected >= 0:
+				var new_value = option_button.get_item_metadata(option_button.selected)
+				brick_instance.set_property("state_id", new_value)
+			return
+
+
+func _get_project_input_actions() -> Array[String]:
+	var actions: Array[String] = []
+	var config := ConfigFile.new()
+	if config.load("res://project.godot") != OK or not config.has_section("input"):
+		return actions
+	for key in config.get_section_keys("input"):
+		var action_name := str(key).strip_edges()
+		if not action_name.is_empty():
+			actions.append(action_name)
+	actions.sort()
+	return actions
+
+
+func _get_builtin_input_actions(project_actions: Array[String]) -> Array[String]:
+	var actions: Array[String] = []
+	for property_info in ProjectSettings.get_property_list():
+		var setting_name := str(property_info.get("name", ""))
+		if not setting_name.begins_with("input/"):
+			continue
+		var action_name := setting_name.trim_prefix("input/")
+		if action_name.is_empty() or project_actions.has(action_name):
+			continue
+		actions.append(action_name)
+	actions.sort()
+	return actions
+
+
+func _find_input_map_tab(root: Node) -> Dictionary:
+	for candidate in root.find_children("*", "TabContainer", true, false):
+		var tabs := candidate as TabContainer
+		if tabs == null:
+			continue
+		for i in range(tabs.get_tab_count()):
+			if tabs.get_tab_title(i).strip_edges() == "Input Map":
+				return {"tabs": tabs, "index": i}
+	return {}
+
+
+func _activate_input_map_tab(root: Node) -> void:
+	var result := _find_input_map_tab(root)
+	if not result.is_empty():
+		(result["tabs"] as TabContainer).current_tab = int(result["index"])
+
+
+func _open_input_map_settings() -> void:
+	if panel == null or panel.editor_interface == null:
+		return
+	var root: Control = panel.editor_interface.get_base_control()
+	if root == null:
+		return
+
+	# Use Godot's own Project Settings menu action so the dialog initializes
+	# exactly as it would when opened from Project > Project Settings.
+	for candidate in root.find_children("*", "PopupMenu", true, false):
+		var popup := candidate as PopupMenu
+		if popup == null:
+			continue
+		for i in range(popup.get_item_count()):
+			if popup.get_item_text(i).contains("Project Settings"):
+				popup.emit_signal("id_pressed", popup.get_item_id(i))
+				call_deferred("_activate_input_map_tab", root)
+				return
+
+	# Fallback: if the menu structure changes, locate the existing Project
+	# Settings dialog by its Input Map tab and show it directly.
+	var result := _find_input_map_tab(root)
+	if result.is_empty():
+		return
+	var tabs := result["tabs"] as TabContainer
+	tabs.current_tab = int(result["index"])
+	var owner := tabs.get_parent()
+	while owner != null and not (owner is Window):
+		owner = owner.get_parent()
+	if owner is Window:
+		(owner as Window).popup_centered_ratio(0.8)
+
+
+func _create_open_input_maps_button() -> Button:
+	var button := Button.new()
+	button.text = "Open Input Maps"
+	button.tooltip_text = "Open Project Settings > Input Map"
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.pressed.connect(_open_input_map_settings)
+	return button
+
+
+func _create_input_action_picker(graph_node: GraphNode, brick_instance, property_name: String, property_value) -> Control:
+	var hbox = HBoxContainer.new()
+	var label = Label.new()
+	label.text = _format_property_name(property_name) + ":"
+	hbox.add_child(label)
+
+	var line_edit = LineEdit.new()
+	_select_line_edit_text_on_focus(line_edit)
+	line_edit.name = "PropertyControl_" + property_name
+	line_edit.text = str(property_value)
+	line_edit.placeholder_text = "Enter Input action"
+	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_edit.text_changed.connect(_on_property_changed.bind(graph_node, property_name))
+	hbox.add_child(line_edit)
+
+	var menu_button = MenuButton.new()
+	menu_button.text = "▾"
+	menu_button.tooltip_text = "Choose a custom action from Project Settings > Input Map"
+	menu_button.custom_minimum_size = Vector2(28, 0)
+	hbox.add_child(menu_button)
+
+	var popup := menu_button.get_popup()
+	var rebuild_popup = func():
+		popup.clear()
+		var project_actions := _get_project_input_actions()
+		var builtin_actions := _get_builtin_input_actions(project_actions)
+		var item_id := 0
+
+		if not project_actions.is_empty():
+			popup.add_separator("Project Inputs")
+			for action_name in project_actions:
+				popup.add_item(action_name, item_id)
+				popup.set_item_metadata(popup.get_item_index(item_id), action_name)
+				item_id += 1
+
+		if not builtin_actions.is_empty():
+			popup.add_separator("Built-in Inputs")
+			for action_name in builtin_actions:
+				popup.add_item(action_name, item_id)
+				popup.set_item_metadata(popup.get_item_index(item_id), action_name)
+				item_id += 1
+
+	popup.about_to_popup.connect(rebuild_popup)
+	popup.id_pressed.connect(func(id: int):
+		var index := popup.get_item_index(id)
+		if index < 0:
+			return
+		var selected := str(popup.get_item_metadata(index))
+		if selected.is_empty():
+			return
+		line_edit.text = selected
+		_on_property_changed(selected, graph_node, property_name)
+	)
+	rebuild_popup.call()
+	return hbox
+
+
+func _create_variable_picker(graph_node: GraphNode, brick_instance, property_name: String, property_value) -> Control:
+	var hbox = HBoxContainer.new()
+	var label = Label.new()
+	label.text = _format_property_name(property_name) + ":"
+	hbox.add_child(label)
+
+	var line_edit = LineEdit.new()
+	_select_line_edit_text_on_focus(line_edit)
+	line_edit.name = "PropertyControl_" + property_name
+	line_edit.text = str(property_value)
+	line_edit.placeholder_text = "Enter variable name"
+	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_edit.text_changed.connect(_on_property_changed.bind(graph_node, property_name))
+	hbox.add_child(line_edit)
+
+	var menu_button = MenuButton.new()
+	menu_button.text = "▾"
+	menu_button.tooltip_text = "Choose a Logic Bricks variable"
+	menu_button.custom_minimum_size = Vector2(28, 0)
+	hbox.add_child(menu_button)
+
+	var popup := menu_button.get_popup()
+	var rebuild_popup = func():
+		popup.clear()
+		var item_id := 0
+		var local_vars: Array = panel.variables_data if panel != null else []
+		var global_vars: Array = panel.global_vars_data if panel != null else []
+
+		if not local_vars.is_empty():
+			popup.add_separator("Local Variables")
+			for var_data in local_vars:
+				var local_name := str(var_data.get("name", "")).strip_edges()
+				if local_name.is_empty():
+					continue
+				popup.add_item(local_name, item_id)
+				popup.set_item_metadata(popup.get_item_index(item_id), local_name)
+				item_id += 1
+
+		if not global_vars.is_empty():
+			popup.add_separator("Global Variables")
+			for var_data in global_vars:
+				var global_name := str(var_data.get("name", "")).strip_edges()
+				if global_name.is_empty():
+					continue
+				popup.add_item(global_name, item_id)
+				popup.set_item_metadata(popup.get_item_index(item_id), global_name)
+				item_id += 1
+
+		if item_id == 0:
+			popup.add_item("No variables created yet")
+			popup.set_item_disabled(0, true)
+
+	popup.about_to_popup.connect(rebuild_popup)
+	popup.id_pressed.connect(func(id: int):
+		var index := popup.get_item_index(id)
+		if index < 0 or popup.is_item_disabled(index):
+			return
+		var selected := str(popup.get_item_metadata(index))
+		if selected.is_empty():
+			return
+		line_edit.text = selected
+		_on_property_changed(selected, graph_node, property_name)
+	)
+	rebuild_popup.call()
+	return hbox
+
+
+func _collect_project_group_names() -> Array[String]:
+	var groups: Array[String] = []
+
+	# Groups actually used by nodes in the currently edited scene.
+	if panel != null and panel.editor_interface != null:
+		var scene_root: Node = panel.editor_interface.get_edited_scene_root()
+		if scene_root != null:
+			var pending: Array[Node] = [scene_root]
+			while not pending.is_empty():
+				var current: Node = pending.pop_back()
+				for group_value in current.get_groups():
+					var scene_group_name := str(group_value).strip_edges()
+					if not scene_group_name.is_empty() and not scene_group_name.begins_with("_") and not groups.has(scene_group_name):
+						groups.append(scene_group_name)
+				for child in current.get_children():
+					if child is Node:
+						pending.append(child as Node)
+
+	# Also include globally-declared groups even when no node in this scene uses them yet.
+	for property_info in ProjectSettings.get_property_list():
+		var setting_name := str(property_info.get("name", ""))
+		if setting_name.begins_with("global_group/"):
+			var global_group_name := setting_name.trim_prefix("global_group/").strip_edges()
+			if not global_group_name.is_empty() and not groups.has(global_group_name):
+				groups.append(global_group_name)
+
+	# ConfigFile fallback keeps this compatible with projects that serialize global groups as a section.
+	var config := ConfigFile.new()
+	if config.load("res://project.godot") == OK:
+		for section_name in ["global_group", "global_groups"]:
+			if config.has_section(section_name):
+				for key in config.get_section_keys(section_name):
+					var config_group_name := str(key).strip_edges()
+					if not config_group_name.is_empty() and not groups.has(config_group_name):
+						groups.append(config_group_name)
+
+	groups.sort()
+	return groups
+
+
+func _group_picker_condition_matches(brick_instance, condition: Dictionary) -> bool:
+	if condition.is_empty():
+		return true
+	for property_name in condition:
+		var actual := str(brick_instance.get_property(str(property_name), "")).to_lower().replace(" ", "_")
+		var expected = condition[property_name]
+		if expected is Array:
+			var matched := false
+			for option in expected:
+				if actual == str(option).to_lower().replace(" ", "_"):
+					matched = true
+					break
+			if not matched:
+				return false
+		elif actual != str(expected).to_lower().replace(" ", "_"):
+			return false
+	return true
+
+
+func _update_group_picker_buttons(graph_node: GraphNode, brick_instance) -> void:
+	for property_control in _find_prop_nodes(graph_node):
+		var button := property_control.get_node_or_null("GroupPickerButton") as MenuButton
+		if button == null:
+			continue
+		var condition: Dictionary = property_control.get_meta("group_picker_if", {})
+		button.visible = _group_picker_condition_matches(brick_instance, condition)
+
+
+func _create_group_picker(graph_node: GraphNode, brick_instance, prop_def: Dictionary, property_name: String, property_value) -> Control:
+	var hbox := HBoxContainer.new()
+	var label := Label.new()
+	label.text = _format_property_name(property_name) + ":"
+	hbox.add_child(label)
+
+	var line_edit: LineEdit
+	if _is_node_reference_property(prop_def, property_name):
+		var node_edit := NodeReferenceLineEdit.new()
+		node_edit.configure(panel.editor_interface, property_name, _accepted_node_types(prop_def, property_name), panel.current_node)
+		node_edit.node_reference_dropped.connect(_on_property_changed.bind(graph_node, property_name))
+		line_edit = node_edit
+	else:
+		line_edit = LineEdit.new()
+	_select_line_edit_text_on_focus(line_edit)
+	line_edit.name = "PropertyControl_" + property_name
+	line_edit.text = str(property_value)
+	line_edit.placeholder_text = str(prop_def.get("placeholder", "Enter group name"))
+	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_edit.text_changed.connect(_on_property_changed.bind(graph_node, property_name))
+	hbox.add_child(line_edit)
+
+	var menu_button := MenuButton.new()
+	menu_button.name = "GroupPickerButton"
+	menu_button.text = "▾"
+	menu_button.tooltip_text = "Choose a group used in this project"
+	menu_button.custom_minimum_size = Vector2(28, 0)
+	hbox.add_child(menu_button)
+	hbox.set_meta("group_picker_if", prop_def.get("group_picker_if", {}))
+
+	var popup := menu_button.get_popup()
+	var rebuild_popup = func():
+		popup.clear()
+		var groups := _collect_project_group_names()
+		if groups.is_empty():
+			popup.add_item("(No groups found)", 0)
+			popup.set_item_disabled(0, true)
+			return
+		for i in range(groups.size()):
+			popup.add_item(groups[i], i)
+			popup.set_item_metadata(i, groups[i])
+
+	popup.about_to_popup.connect(rebuild_popup)
+	popup.id_pressed.connect(func(id: int):
+		var index := popup.get_item_index(id)
+		if index < 0:
+			return
+		var selected := str(popup.get_item_metadata(index)).strip_edges()
+		if selected.is_empty():
+			return
+		var new_value := selected
+		if bool(prop_def.get("group_picker_multi", false)):
+			var existing: Array[String] = []
+			for part in line_edit.text.split(","):
+				var group_name := str(part).strip_edges()
+				if not group_name.is_empty() and not existing.has(group_name):
+					existing.append(group_name)
+			if not existing.has(selected):
+				existing.append(selected)
+			new_value = ", ".join(existing)
+		line_edit.text = new_value
+		_on_property_changed(new_value, graph_node, property_name)
+	)
+	rebuild_popup.call()
+	return hbox
+
+func _on_file_picker_pressed(graph_node: GraphNode, property_name: String, filter: String) -> void:
+	# Open a file dialog to select a file path
+	var file_dialog = FileDialog.new()
+	file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	file_dialog.access = FileDialog.ACCESS_RESOURCES
+	file_dialog.use_native_dialog = false
+
+	# Set filters from hint_string (e.g., "*.tscn,*.scn")
+	if not filter.is_empty():
+		file_dialog.filters = PackedStringArray([filter])
+
+	# When file is selected, update the property
+	file_dialog.file_selected.connect(func(path: String):
+		if graph_node.has_meta("brick_data"):
+			var brick_data = graph_node.get_meta("brick_data")
+			brick_data["brick_instance"].set_property(property_name, path)
+
+			# Update the LineEdit to show just the filename
+			for child in graph_node.get_children():
+				if child.has_meta("property_name") and child.get_meta("property_name") == property_name:
+					var line_edit = child.get_node_or_null("PropertyControl_" + property_name)
+					if line_edit:
+						line_edit.text = path.get_file()
+						line_edit.tooltip_text = path
+					break
+
+			panel._save_graph_to_metadata()
+		file_dialog.queue_free()
+	)
+
+	# Close dialog if cancelled
+	file_dialog.canceled.connect(func():
+		file_dialog.queue_free()
+	)
+
+	# Add to scene tree and show
+	panel.add_child(file_dialog)
+	file_dialog.popup_centered_ratio(0.6)
+

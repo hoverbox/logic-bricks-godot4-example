@@ -1,0 +1,13 @@
+[gd_scene format=3 uid="uid://ciqlr54jxcd62"]
+
+[ext_resource type="PackedScene" uid="uid://bcyod83hofnwx" path="res://imported/jewel.glb" id="1_fpdle"]
+
+[sub_resource type="ConcavePolygonShape3D" id="ConcavePolygonShape3D_spiws"]
+data = PackedVector3Array(0.0832, 0.18519999, 0.1441, 0.1664, 0.18519999, 0, 0, 0, 0, -0.0832, 0.18519999, 0.1441, 0.0832, 0.18519999, 0.1441, 0, 0, 0, 0.0832, 0.18519999, 0.1441, 0, 0.3705, 0, 0.1664, 0.18519999, 0, 0, 0.3705, 0, -0.0832, 0.18519999, -0.1441, 0.0832, 0.18519999, -0.1441, 0, 0, 0, 0.1664, 0.18519999, 0, 0.0832, 0.18519999, -0.1441, 0.0832, 0.18519999, -0.1441, -0.0832, 0.18519999, -0.1441, 0, 0, 0, 0, 0.3705, 0, -0.1664, 0.18519999, 0, -0.0832, 0.18519999, -0.1441, -0.0832, 0.18519999, 0.1441, 0, 0, 0, -0.1664, 0.18519999, 0, 0, 0.3705, 0, 0.0832, 0.18519999, 0.1441, -0.0832, 0.18519999, 0.1441, -0.0832, 0.18519999, 0.1441, -0.1664, 0.18519999, 0, 0, 0.3705, 0, -0.1664, 0.18519999, 0, 0, 0, 0, -0.0832, 0.18519999, -0.1441, 0.1664, 0.18519999, 0, 0, 0.3705, 0, 0.0832, 0.18519999, -0.1441)
+
+[node name="jewel" type="StaticBody3D" unique_id=1516982112]
+
+[node name="jewel2" type="Node3D" parent="." unique_id=499011720 instance=ExtResource("1_fpdle")]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=356185160]
+shape = SubResource("ConcavePolygonShape3D_spiws")

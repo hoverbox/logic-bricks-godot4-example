@@ -1,0 +1,358 @@
+@tool
+
+extends "res://addons/logic_bricks/core/logic_brick.gd"
+
+## Collision Sensor - Detects collisions via an Area3D node
+## The Area3D is located by name at runtime by searching the whole scene tree
+## Supports body_entered, body_exited, and continuous overlap detection
+
+
+func _init() -> void:
+	super._init()
+	brick_type = BrickType.SENSOR
+	brick_name = "Collision"
+
+
+func _initialize_properties() -> void:
+	properties = {
+		"area_node_name":  "",
+		"detection_mode": "entered",
+		"detect_bodies":  true,
+		"detect_areas":   false,
+		"filter_type":    "any",
+		"filter_value":   "",
+		"invert":         false
+	}
+
+
+func get_property_definitions() -> Array:
+	return [
+		{
+			"name": "area_node_name",
+			"type": TYPE_STRING,
+			"default": "",
+			"node_reference": true,
+			"accepted_node_types": ["Area3D"]
+		},
+		{
+			"name": "detection_mode",
+			"type": TYPE_STRING,
+			"hint": PROPERTY_HINT_ENUM,
+			"hint_string": "Entered,Exited,Overlapping",
+			"default": "entered"
+		},
+		{
+			"name": "detect_bodies",
+			"type": TYPE_BOOL,
+			"default": true
+		},
+		{
+			"name": "detect_areas",
+			"type": TYPE_BOOL,
+			"default": false
+		},
+		{
+			"name": "filter_type",
+			"type": TYPE_STRING,
+			"hint": PROPERTY_HINT_ENUM,
+			"hint_string": "Any,Group,Name",
+			"default": "any"
+		},
+		{
+			"name": "filter_value", "required": true, "required_label": "a group or node name to filter", "required_if": {"filter_type": ["group", "name"]}, "group_picker": true, "group_picker_if": {"filter_type": "group"},
+			"type": TYPE_STRING,
+			"default": ""
+		},
+		{
+			"name": "invert",
+			"type": TYPE_BOOL,
+			"default": false
+		}
+	]
+
+
+func get_configuration_warnings(node: Node = null) -> Array[String]:
+	var warnings = super.get_configuration_warnings(node)
+	var area_node_name = str(properties.get("area_node_name", "")).strip_edges()
+	if area_node_name.is_empty() and not node is Area3D:
+		warnings.append("Select or enter an Area3D node name, or attach these Logic Bricks directly to an Area3D node.")
+	return warnings
+
+
+func get_tooltip_definitions() -> Dictionary:
+	return {
+		"_description": "Detects collisions via an Area3D node.\n\nLeave Area Node Name blank when these Logic Bricks are attached directly to the Area3D. Otherwise, enter the node name (not the full path).",
+		"area_node_name": "Leave blank to use this node when it is an Area3D. Otherwise, enter the name of the Area3D to use for collision detection (e.g. \"HitArea\"). Searches the whole scene tree.",
+		"detection_mode": "Entered: fires once when something enters.\nExited: fires once when something leaves.\nOverlapping: active every frame while overlapping.",
+		"detect_bodies":  "Detect physics bodies (CharacterBody3D, RigidBody3D, etc.).",
+		"detect_areas":   "Detect other Area3D nodes.",
+		"filter_type":    "Any: detect everything.\nGroup: only detect nodes in a specific group.\nName: only detect a node with a specific name.",
+		"filter_value":   "Group name or node name to filter by.",
+		"invert":         "Invert the result.",
+	}
+
+
+func generate_code(node: Node, chain_name: String) -> Dictionary:
+	var area_node_name = properties.get("area_node_name", "")
+	var detection_mode = properties.get("detection_mode", "entered")
+	var detect_bodies  = properties.get("detect_bodies", true)
+	var detect_areas   = properties.get("detect_areas", false)
+	var filter_type    = properties.get("filter_type", "any")
+	var filter_value   = properties.get("filter_value", "")
+	var invert         = properties.get("invert", false)
+
+	# Normalize
+	if typeof(detection_mode) == TYPE_STRING:
+		detection_mode = detection_mode.to_lower()
+	if typeof(filter_type) == TYPE_STRING:
+		filter_type = filter_type.to_lower()
+
+	# Build a unique area variable name scoped to this chain so multiple
+	# collision sensors never collide with each other at script scope.
+	var area_var     = "_col_area_%s" % chain_name
+	var flag_var     = "_collision_%s_%s" % [detection_mode, chain_name]
+	var collided_var = "_collided_with_%s" % chain_name
+
+	var code_lines:  Array[String] = []
+	var member_vars: Array[String] = []
+	var ready_lines: Array[String] = []
+
+	# Runtime Area3D reference — resolved by searching the whole scene tree (like Text Actuator)
+	member_vars.append("var %s: Area3D = null" % area_var)
+	_append_find_node_helpers(member_vars)
+
+	# _ready(): locate the Area3D by name. Prefer this script's node/subtree first.
+	# This matters for instanced scenes: a global name search can grab another
+	# Area3D with the same name elsewhere in the level, causing this sensor to
+	# fire from the wrong coin/trigger.
+	var quoted_name = "\"%s\"" % area_node_name
+	ready_lines.append("# Collision Sensor (%s): locate Area3D by name, preferring this instance" % chain_name)
+	ready_lines.append("%s = _lb_find_collision_area_for_sensor(self, %s)" % [area_var, quoted_name])
+	ready_lines.append("if not %s:" % area_var)
+	ready_lines.append("\tpush_warning(\"Collision Sensor [%s]: could not find Area3D named '%s' anywhere in the scene\")" % [area_var, area_node_name])
+
+	# Name of the per-chain setup helper — called from both _ready() and
+	# _on_logic_brick_state_enter() so signal connections survive state resets.
+	var setup_func = "_setup_collision_sensor_%s" % chain_name
+
+	match detection_mode:
+		"entered", "exited":
+			var result = _generate_signal_code(
+				detection_mode, area_var, flag_var, collided_var,
+				detect_bodies, detect_areas, filter_type, filter_value, chain_name, invert
+			)
+			member_vars.append_array(result["member_vars"])
+
+			# Wrap the find_child + signal-connect block in a helper func so it
+			# can be re-called after a state transition without nulling the ref.
+			member_vars.append("")
+			member_vars.append("func %s() -> void:" % setup_func)
+			for line in ready_lines:
+				member_vars.append("\t" + line)
+			for line in result["ready_lines"]:
+				member_vars.append("\t" + line)
+
+			# Call the helper from _ready() via ready_code
+			ready_lines = ["%s()" % setup_func]
+
+			code_lines.append_array(result["sensor_lines"])
+
+		"overlapping":
+			# Overlapping mode polls each frame — no signal connections needed,
+			# so the find_child lines in ready_lines are fine as-is.
+			code_lines.append_array(
+				_generate_overlapping_code(
+					area_var, detect_bodies, detect_areas, filter_type, filter_value, invert
+				)
+			)
+
+	var result = {
+		"sensor_code": "\n".join(code_lines),
+		"member_vars": member_vars
+	}
+
+	if ready_lines.size() > 0:
+		result["ready_code"] = ready_lines
+
+	return result
+
+
+## Generate signal-based detection code (entered / exited)
+func _generate_signal_code(detection_mode: String, area_var: String,
+							flag_var: String, collided_var: String,
+							detect_bodies: bool, detect_areas: bool,
+							filter_type: String, filter_value: String, chain_name: String,
+							invert: bool = false) -> Dictionary:
+	var member_vars: Array[String] = []
+	var ready_lines: Array[String] = []
+	var sensor_lines: Array[String] = []
+
+	var body_signal   = "body_entered" if detection_mode == "entered" else "body_exited"
+	var area_signal   = "area_entered" if detection_mode == "entered" else "area_exited"
+	var body_callback = "_on_collision_%s_%s_body" % [chain_name, detection_mode]
+	var area_callback = "_on_collision_%s_%s_area" % [chain_name, detection_mode]
+	var active_contacts = "_collision_active_contacts_%s" % chain_name
+
+	# State tracking vars
+	member_vars.append("var %s: bool = false" % flag_var)
+	member_vars.append("var %s = null" % collided_var)
+	if detection_mode == "entered":
+		member_vars.append("var %s: Dictionary = {}" % active_contacts)
+
+	# Entered mode is contact-latched: one logical scene instance can only fire
+	# once until all of its body/area overlaps have exited. This prevents an
+	# enemy with both a physics body and child hitbox Areas from dealing damage
+	# multiple times for the same touch.
+	if detection_mode == "entered":
+		if detect_bodies:
+			var body_exit_callback = "_on_collision_%s_contact_exit_body" % chain_name
+			member_vars.append("")
+			member_vars.append("func %s(body) -> void:" % body_callback)
+			_append_contact_enter_lines(member_vars, "body", active_contacts, flag_var, collided_var, filter_type, filter_value)
+			member_vars.append("")
+			member_vars.append("func %s(body) -> void:" % body_exit_callback)
+			_append_contact_exit_lines(member_vars, "body", active_contacts)
+		if detect_areas:
+			var area_exit_callback = "_on_collision_%s_contact_exit_area" % chain_name
+			member_vars.append("")
+			member_vars.append("func %s(area) -> void:" % area_callback)
+			_append_contact_enter_lines(member_vars, "area", active_contacts, flag_var, collided_var, filter_type, filter_value)
+			member_vars.append("")
+			member_vars.append("func %s(area) -> void:" % area_exit_callback)
+			_append_contact_exit_lines(member_vars, "area", active_contacts)
+	else:
+		if detect_bodies:
+			member_vars.append("")
+			member_vars.append("func %s(body) -> void:" % body_callback)
+			member_vars.append("\t%s = true" % flag_var)
+			member_vars.append("\t%s = body" % collided_var)
+		if detect_areas:
+			member_vars.append("")
+			member_vars.append("func %s(area) -> void:" % area_callback)
+			member_vars.append("\t%s = true" % flag_var)
+			member_vars.append("\t%s = area" % collided_var)
+
+	# _ready(): connect signals on the located Area3D reference
+	ready_lines.append("if %s:" % area_var)
+	if detect_bodies:
+		ready_lines.append("\tif not %s.%s.is_connected(%s):" % [area_var, body_signal, body_callback])
+		ready_lines.append("\t\t%s.%s.connect(%s)" % [area_var, body_signal, body_callback])
+		if detection_mode == "entered":
+			var body_exit_callback = "_on_collision_%s_contact_exit_body" % chain_name
+			ready_lines.append("\tif not %s.body_exited.is_connected(%s):" % [area_var, body_exit_callback])
+			ready_lines.append("\t\t%s.body_exited.connect(%s)" % [area_var, body_exit_callback])
+	if detect_areas:
+		ready_lines.append("\tif not %s.%s.is_connected(%s):" % [area_var, area_signal, area_callback])
+		ready_lines.append("\t\t%s.%s.connect(%s)" % [area_var, area_signal, area_callback])
+		if detection_mode == "entered":
+			var area_exit_callback = "_on_collision_%s_contact_exit_area" % chain_name
+			ready_lines.append("\tif not %s.area_exited.is_connected(%s):" % [area_var, area_exit_callback])
+			ready_lines.append("\t\t%s.area_exited.connect(%s)" % [area_var, area_exit_callback])
+
+	# Sensor evaluation code (runs each frame)
+	sensor_lines.append("var sensor_active = (func():")
+	sensor_lines.append("\tif not %s:" % flag_var)
+	sensor_lines.append("\t\treturn %s" % ("true" if invert else "false"))
+
+	if filter_type != "any" and not filter_value.is_empty():
+		sensor_lines.append("\tif %s:" % collided_var)
+		if filter_type == "group":
+			sensor_lines.append("\t\tif %s.is_in_group(\"%s\"):" % [collided_var, filter_value])
+		elif filter_type == "name":
+			sensor_lines.append("\t\tif %s.name == \"%s\":" % [collided_var, filter_value])
+		sensor_lines.append("\t\t\t%s = false" % flag_var)
+		sensor_lines.append("\t\t\treturn %s" % ("false" if invert else "true"))
+		sensor_lines.append("\t%s = false  # Didn't match filter" % flag_var)
+		sensor_lines.append("\treturn %s" % ("true" if invert else "false"))
+	else:
+		sensor_lines.append("\t%s = false" % flag_var)
+		sensor_lines.append("\treturn %s" % ("false" if invert else "true"))
+
+	sensor_lines.append(").call()")
+
+	return {
+		"member_vars": member_vars,
+		"ready_lines": ready_lines,
+		"sensor_lines": sensor_lines
+	}
+
+
+func _append_contact_enter_lines(lines: Array[String], obj_name: String, active_contacts: String, flag_var: String, collided_var: String, filter_type: String, filter_value: String) -> void:
+	lines.append("\tvar _contact_target: Node = %s" % obj_name)
+	lines.append("\tvar _contact_owner: Node = %s.get_owner() if is_instance_valid(%s) else null" % [obj_name, obj_name])
+	if filter_type == "group" and not filter_value.is_empty():
+		lines.append("\tif not %s.is_in_group(\"%s\"):" % [obj_name, filter_value])
+		lines.append("\t\tif _contact_owner and _contact_owner.is_in_group(\"%s\"):" % filter_value)
+		lines.append("\t\t\t_contact_target = _contact_owner")
+		lines.append("\t\telse:")
+		lines.append("\t\t\treturn")
+	elif filter_type == "name" and not filter_value.is_empty():
+		lines.append("\tif %s.name != \"%s\":" % [obj_name, filter_value])
+		lines.append("\t\tif _contact_owner and _contact_owner.name == \"%s\":" % filter_value)
+		lines.append("\t\t\t_contact_target = _contact_owner")
+		lines.append("\t\telse:")
+		lines.append("\t\t\treturn")
+	lines.append("\tvar _contact_key: Node = _contact_owner if _contact_owner else _contact_target")
+	lines.append("\tvar _contact_count: int = int(%s.get(_contact_key, 0))" % active_contacts)
+	lines.append("\t%s[_contact_key] = _contact_count + 1" % active_contacts)
+	lines.append("\tif _contact_count == 0:")
+	lines.append("\t\t%s = true" % flag_var)
+	lines.append("\t\t%s = _contact_target" % collided_var)
+
+
+func _append_contact_exit_lines(lines: Array[String], obj_name: String, active_contacts: String) -> void:
+	lines.append("\tvar _contact_owner: Node = %s.get_owner() if is_instance_valid(%s) else null" % [obj_name, obj_name])
+	lines.append("\tvar _contact_key: Node = _contact_owner if _contact_owner else %s" % obj_name)
+	lines.append("\tif not %s.has(_contact_key):" % active_contacts)
+	lines.append("\t\treturn")
+	lines.append("\tvar _contact_count: int = int(%s[_contact_key]) - 1" % active_contacts)
+	lines.append("\tif _contact_count <= 0:")
+	lines.append("\t\t%s.erase(_contact_key)" % active_contacts)
+	lines.append("\telse:")
+	lines.append("\t\t%s[_contact_key] = _contact_count" % active_contacts)
+
+
+## Generate overlap/polling detection code
+func _generate_overlapping_code(area_var: String,
+								detect_bodies: bool, detect_areas: bool,
+								filter_type: String, filter_value: String,
+								invert: bool = false) -> Array[String]:
+	var lines: Array[String] = []
+
+	lines.append("var sensor_active = (func():")
+	lines.append("\tif not %s:" % area_var)
+	lines.append("\t\tpush_warning(\"Collision Sensor: Area3D ref '%s' is null — check node name\")" % area_var)
+	lines.append("\t\treturn false")
+	lines.append("\tvar _detected = []")
+
+	if detect_bodies:
+		lines.append("\t_detected.append_array(%s.get_overlapping_bodies())" % area_var)
+	if detect_areas:
+		lines.append("\t_detected.append_array(%s.get_overlapping_areas())" % area_var)
+
+	lines.append("\t")
+	_add_filter_code(lines, filter_type, filter_value, invert)
+	lines.append(").call()")
+
+	return lines
+
+
+func _add_filter_code(lines: Array[String], filter_type: String, filter_value: String, invert: bool = false) -> void:
+	if filter_type == "any":
+		lines.append("\treturn _detected.size() > 0" if not invert else "\treturn _detected.size() == 0")
+	elif filter_type == "group" and not filter_value.is_empty():
+		if invert:
+			lines.append("\treturn not _detected.any(func(obj): return obj.is_in_group(\"%s\"))" % filter_value)
+		else:
+			lines.append("\treturn _detected.any(func(obj): return obj.is_in_group(\"%s\"))" % filter_value)
+	elif filter_type == "name" and not filter_value.is_empty():
+		if invert:
+			lines.append("\treturn not _detected.any(func(obj): return obj.name == \"%s\")" % filter_value)
+		else:
+			lines.append("\treturn _detected.any(func(obj): return obj.name == \"%s\")" % filter_value)
+	else:
+		lines.append("\treturn %s" % ("false" if not invert else "true"))
+
+
+func _append_find_node_helpers(member_vars: Array[String]) -> void:
+	_append_collision_area_helpers(member_vars, "Area3D")

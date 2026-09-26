@@ -1,0 +1,14 @@
+[gd_scene format=3 uid="uid://elp4bmx0cn2q"]
+
+[ext_resource type="PackedScene" uid="uid://cm1wq3grvqus2" path="res://imported/platform-fortified.glb" id="1_mo85p"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_y520g"]
+size = Vector3(1, 0.20500001, 1)
+
+[node name="platform_fortified" type="StaticBody3D" unique_id=781106458]
+
+[node name="platform-fortified2" type="Node3D" parent="." unique_id=1634117767 instance=ExtResource("1_mo85p")]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1616494247]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.10250001, 0)
+shape = SubResource("BoxShape3D_y520g")

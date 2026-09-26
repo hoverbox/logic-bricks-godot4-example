@@ -1,0 +1,103 @@
+[gd_scene format=3 uid="uid://5iwa84vi1ck8"]
+
+[ext_resource type="PackedScene" uid="uid://xfaqqdgfuow8" path="res://assets/block_grass_large.tscn" id="1_ach78"]
+[ext_resource type="PackedScene" uid="uid://cikl3lgeu8mmo" path="res://assets/arrow.tscn" id="2_b6rc5"]
+[ext_resource type="PackedScene" uid="uid://bpkd8vup0gu5h" path="res://assets/tree.tscn" id="3_e3lw5"]
+[ext_resource type="PackedScene" uid="uid://33v2fawtedxt" path="res://assets/rocks.tscn" id="4_uf87u"]
+[ext_resource type="PackedScene" uid="uid://b262b4cxfymps" path="res://assets/platform.tscn" id="5_uefbf"]
+[ext_resource type="PackedScene" uid="uid://bodw1jb42kh53" path="res://assets/coin_gold.tscn" id="6_ex0an"]
+[ext_resource type="PackedScene" uid="uid://i5bbcjssf758" path="res://assets/character_oodi.tscn" id="7_pv08v"]
+[ext_resource type="PackedScene" uid="uid://dtqsktqat5tc2" path="res://assets/block_moving.tscn" id="8_b6rc5"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7cpdb"]
+sky_horizon_color = Color(0.66224277, 0.6717428, 0.6867428, 1)
+ground_horizon_color = Color(0.66224277, 0.6717428, 0.6867428, 1)
+
+[sub_resource type="Sky" id="Sky_4hq5f"]
+sky_material = SubResource("ProceduralSkyMaterial_7cpdb")
+
+[sub_resource type="Environment" id="Environment_al648"]
+background_mode = 2
+sky = SubResource("Sky_4hq5f")
+glow_enabled = true
+fog_enabled = true
+fog_light_color = Color(0.066332765, 0.5899364, 0.8388716, 1)
+fog_height = 1.0
+fog_height_density = 0.4444
+
+[node name="Unit 1 Motion" type="Node3D" unique_id=919594999]
+metadata/logic_bricks_states = Array[Dictionary]([{
+"id": "state_1",
+"name": "State 1"
+}])
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 0,
+"nodes": []
+}
+metadata/logic_bricks_frames = []
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1249294412]
+environment = SubResource("Environment_al648")
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 7,
+"nodes": []
+}
+metadata/logic_bricks_frames = []
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1196251319]
+transform = Transform3D(-0.8660254, -0.43301278, 0.25, 0, 0.49999997, 0.86602545, -0.50000006, 0.75, -0.43301266, 0, 0, 0)
+shadow_enabled = true
+
+[node name="block_grass_large" parent="." unique_id=1768464389 instance=ExtResource("1_ach78")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.09774661, 1.1920929e-07, -0.17892456)
+
+[node name="block_grass_large2" parent="." unique_id=1321782299 instance=ExtResource("1_ach78")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.902253, 1.1920929e-07, -0.17892456)
+
+[node name="block_grass_large3" parent="." unique_id=619778313 instance=ExtResource("1_ach78")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 13.473161, 1.1920929e-07, -0.17892456)
+
+[node name="arrow" parent="." unique_id=584926754 instance=ExtResource("2_b6rc5")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.57076275, 1, -0.7210002)
+
+[node name="tree" parent="." unique_id=1586069586 instance=ExtResource("3_e3lw5")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.7169126, 1.0000004, -0.8776591)
+
+[node name="rocks" parent="." unique_id=1305718699 instance=ExtResource("4_uf87u")]
+transform = Transform3D(0.12666239, 0, 0.55061936, 0, 0.565, 0, -0.55061936, 0, 0.12666239, -0.3816694, 1, -0.41451526)
+
+[node name="platform" parent="." unique_id=2068322151 instance=ExtResource("5_uefbf")]
+transform = Transform3D(-4.371139e-08, 0, -1, 0, 1, 0, 1, 0, -4.371139e-08, 1.4022534, 0.79911923, -0.2611382)
+
+[node name="platform2" parent="." unique_id=1794470673 instance=ExtResource("5_uefbf")]
+transform = Transform3D(-4.371139e-08, 0, -1, 0, 1, 0, 1, 0, -4.371139e-08, 2.4022534, 0.79911923, -0.2611382)
+
+[node name="platform3" parent="." unique_id=1812063160 instance=ExtResource("5_uefbf")]
+transform = Transform3D(-4.371139e-08, 0, -1, 0, 1, 0, 1, 0, -4.371139e-08, 3.4022534, 0.79911923, -0.2611382)
+
+[node name="platform4" parent="." unique_id=554167572 instance=ExtResource("5_uefbf")]
+transform = Transform3D(-4.371139e-08, 0, -1, 0, 1, 0, 1, 0, -4.371139e-08, 4.402253, 0.79911923, -0.2611382)
+
+[node name="coin_gold" parent="." unique_id=475889131 instance=ExtResource("6_ex0an")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 13.574099, 1.1517884, -0.25093007)
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1252017550]
+transform = Transform3D(1, 0, 0, 0, 0.8187469, 0.57415473, 0, -0.57415473, 0.8187469, 2.8388329, 3.4614124, 2.865156)
+metadata/logic_bricks_states = Array[Dictionary]([{
+"id": "state_1",
+"name": "State 1"
+}])
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 0,
+"nodes": []
+}
+metadata/logic_bricks_frames = []
+
+[node name="enemy" parent="." unique_id=340771490 instance=ExtResource("7_pv08v")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.430189, 1.0679449, -0.278953)
+
+[node name="block_moving" parent="." unique_id=949813800 instance=ExtResource("8_b6rc5")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.167331, 0.7166555, -0.029927254)

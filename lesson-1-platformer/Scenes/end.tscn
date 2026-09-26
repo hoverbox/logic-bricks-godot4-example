@@ -1,0 +1,66 @@
+[gd_scene format=3 uid="uid://ba1pauambvdnt"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_3j1m5"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dgqj5"]
+emission_enabled = true
+emission = Color(0.5755518, 0.95712095, 0, 1)
+
+[node name="End" type="Node3D" unique_id=400353866]
+metadata/logic_bricks_states = Array[Dictionary]([{
+"id": "state_1",
+"name": "State 1"
+}])
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 7,
+"nodes": []
+}
+metadata/logic_bricks_frames = []
+
+[node name="Label3D" type="Label3D" parent="." unique_id=1965886349]
+double_sided = false
+alpha_cut = 1
+alpha_scissor_threshold = 0.906
+alpha_hash_scale = 0.0
+alpha_antialiasing_mode = 1
+texture_filter = 0
+text = "YOU DID IT!"
+metadata/logic_bricks_states = Array[Dictionary]([{
+"id": "state_1",
+"name": "State 1"
+}])
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 7,
+"nodes": []
+}
+metadata/logic_bricks_frames = []
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=811198473]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0.4513495)
+metadata/logic_bricks_states = Array[Dictionary]([{
+"id": "state_1",
+"name": "State 1"
+}])
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 7,
+"nodes": []
+}
+metadata/logic_bricks_frames = []
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1745817327]
+transform = Transform3D(3.2347016, 0, 0, 0, -4.3711392e-08, -2.978664, 0, 1.0000001, -1.3020154e-07, 0, 0, -0.61922944)
+mesh = SubResource("PlaneMesh_3j1m5")
+surface_material_override/0 = SubResource("StandardMaterial3D_dgqj5")
+metadata/logic_bricks_states = Array[Dictionary]([{
+"id": "state_1",
+"name": "State 1"
+}])
+metadata/logic_bricks_graph = {
+"connections": [],
+"next_id": 7,
+"nodes": []
+}
+metadata/logic_bricks_frames = []

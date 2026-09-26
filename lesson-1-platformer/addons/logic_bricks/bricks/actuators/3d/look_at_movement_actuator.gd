@@ -1,0 +1,158 @@
+@tool
+extends "res://addons/logic_bricks/core/logic_brick.gd"
+
+## Rotates a node to face the direction of movement
+## Target node is found beneath the node that owns this Logic Bricks script
+## Forward axis setting corrects for meshes whose front isn't -Z
+
+
+func _init() -> void:
+	super._init()
+	brick_type = BrickType.ACTUATOR
+	brick_name = "Look At Movement"
+
+
+func _initialize_properties() -> void:
+	properties = {
+		"target_node_name": "MeshInstance3D",
+		"forward_axis": "-z",  # Which direction the mesh considers "forward"
+		"smoothing": 0.1,  # How smoothly to rotate (0 = instant, higher = smoother)
+		"ignore_platform_motion": true,  # Ignore moving platform carry/inherited velocity when choosing look direction
+	}
+
+
+func get_property_definitions() -> Array:
+	return [
+		{
+			"name": "target_node_name",
+			"type": TYPE_STRING,
+			"default": "MeshInstance3D",
+			"placeholder": "Node3D node name",
+			"node_reference": true,
+			"accepted_node_types": ["Node3D"]
+		},
+		{
+			"name": "forward_axis",
+			"type": TYPE_STRING,
+			"hint": PROPERTY_HINT_ENUM,
+			"hint_string": "-Z (Godot Default),+Z,+X,-X",
+			"default": "-z"
+		},
+		{
+			"name": "smoothing",
+			"type": TYPE_FLOAT,
+			"default": 0.1
+		},
+		{
+			"name": "ignore_platform_motion",
+			"type": TYPE_BOOL,
+			"default": true
+		},
+	]
+
+
+func get_tooltip_definitions() -> Dictionary:
+	return {
+		"_description": "Rotates a child Node3D to face the direction of movement. The target is resolved only beneath this Logic Bricks node.",
+		"target_node_name": "The name of a child Node3D to rotate, such as PlayerMesh or CharacterModel. Only children beneath this Logic Bricks node are searched.",
+		"forward_axis": "Which direction the mesh considers 'forward'.\n-Z is Godot's default forward direction.",
+		"smoothing": "How smoothly to rotate.\n0 = instant, higher = smoother.",
+		"ignore_platform_motion": "When enabled, moving-platform carry and inherited platform velocity are removed before choosing the look direction. This keeps the character facing the player's input movement instead of the platform's movement.",
+	}
+
+
+func generate_code(node: Node, chain_name: String) -> Dictionary:
+	var target_node_name = str(properties.get("target_node_name", "MeshInstance3D")).strip_edges()
+	var forward_axis = properties.get("forward_axis", "-z")
+	var smoothing = properties.get("smoothing", 0.1)
+	var ignore_platform_motion = properties.get("ignore_platform_motion", true)
+
+	# Normalize
+	if typeof(forward_axis) == TYPE_STRING:
+		forward_axis = forward_axis.to_lower().replace(" ", "_")
+
+	# Y rotation offset to correct for mesh forward direction
+	# look_at() makes -Z point at the target, so we offset based on where the mesh's front actually is
+	var y_offset = "0.0"
+	match forward_axis:
+		"-z", "-z_(godot_default)":
+			y_offset = "0.0"          # No correction needed
+		"+z":
+			y_offset = "PI"           # 180 degrees
+		"+x":
+			y_offset = "-PI / 2.0"   # -90 degrees
+		"-x":
+			y_offset = "PI / 2.0"    # 90 degrees
+
+	var label = _unique_label(chain_name)
+	var target_var = "_%s_target_node" % label
+	var last_pos_var = "_look_at_last_pos_%s" % chain_name
+
+	var member_vars: Array[String] = []
+	var code_lines: Array[String] = []
+
+	# Runtime Node3D reference — resolved by typed node name
+	member_vars.append("var %s: Node3D = null" % target_var)
+	member_vars.append("var %s: Vector3 = Vector3.INF" % last_pos_var)
+	if ignore_platform_motion:
+		# Character/Gravity actuators write this after movement so next frame can ignore external carry.
+		# When no platform actuator is present it remains zero.
+		member_vars.append("var _logic_brick_external_motion_delta: Vector3 = Vector3.ZERO")
+
+	code_lines.append("# Rotate target node to face movement direction")
+	code_lines.append("var _target_name_%s = \"%s\"" % [label, _gd_string(target_node_name)])
+	code_lines.append("if _target_name_%s.is_empty():" % label)
+	code_lines.append("\tpush_warning(\"Look At Movement: No target node name set\")")
+	code_lines.append("\t%s = null" % target_var)
+	code_lines.append("elif %s == null or %s.name != _target_name_%s:" % [target_var, target_var, label])
+	code_lines.append("\tvar _found_target_%s = find_child(_target_name_%s, true, false)" % [label, label])
+	code_lines.append("\tif _found_target_%s == null and get_tree().current_scene:" % label)
+	code_lines.append("\t\t_found_target_%s = get_tree().current_scene.find_child(_target_name_%s, true, false)" % [label, label])
+	code_lines.append("\tif _found_target_%s == null:" % label)
+	code_lines.append("\t\t_found_target_%s = get_tree().root.find_child(_target_name_%s, true, false)" % [label, label])
+	code_lines.append("\tif _found_target_%s is Node3D:" % label)
+	code_lines.append("\t\t%s = _found_target_%s" % [target_var, label])
+	code_lines.append("\telif _found_target_%s:" % label)
+	code_lines.append("\t\tpush_warning(\"Look At Movement: node '\" + str(_target_name_%s) + \"' is not a Node3D\")" % label)
+	code_lines.append("if not %s:" % target_var)
+	code_lines.append("\tpush_warning(\"Look At Movement: could not find Node3D named '\" + str(_target_name_%s) + \"'\")" % label)
+	code_lines.append("else:")
+
+	# CharacterBody movement is known before move_and_slide(), so use velocity.
+	# Position delta remains the fallback for ordinary Node3D movement.
+	code_lines.append("\t# Determine movement direction")
+	code_lines.append("\tvar _movement_dir: Vector3")
+	code_lines.append("\tif self is CharacterBody3D:")
+	code_lines.append("\t\t_movement_dir = (self as CharacterBody3D).velocity")
+	code_lines.append("\telse:")
+	code_lines.append("\t\tif %s == Vector3.INF:" % last_pos_var)
+	code_lines.append("\t\t\t%s = global_position" % last_pos_var)
+	code_lines.append("\t\t_movement_dir = global_position - %s" % last_pos_var)
+	if ignore_platform_motion:
+		code_lines.append("\t\t_movement_dir -= _logic_brick_external_motion_delta")
+	code_lines.append("\t%s = global_position" % last_pos_var)
+
+	code_lines.append("\t")
+	code_lines.append("\t# Flatten to horizontal plane")
+	code_lines.append("\t_movement_dir.y = 0.0")
+	code_lines.append("\t")
+	code_lines.append("\t# Only rotate if actually moving")
+	code_lines.append("\tif _movement_dir.length_squared() > 0.0001:")
+	code_lines.append("\t\tvar _look_target = global_position + _movement_dir.normalized()")
+	code_lines.append("\t\t")
+
+	if smoothing > 0.001:
+		code_lines.append("\t\t# Smooth Y-axis rotation only")
+		code_lines.append("\t\tvar _target_angle = atan2(_movement_dir.x, _movement_dir.z) + %s" % y_offset)
+		code_lines.append("\t\tvar _current_y = %s.global_rotation.y" % target_var)
+		code_lines.append("\t\t%s.global_rotation.y = lerp_angle(_current_y, _target_angle, %f)" % [target_var, smoothing])
+	else:
+		code_lines.append("\t\t# Instant Y-axis rotation")
+		code_lines.append("\t\t%s.global_rotation.y = atan2(_movement_dir.x, _movement_dir.z) + %s" % [target_var, y_offset])
+
+	return {
+		"actuator_code": "\n".join(code_lines),
+		"member_vars": member_vars
+	}
+
+
